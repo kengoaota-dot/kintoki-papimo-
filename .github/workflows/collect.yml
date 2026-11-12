@@ -1,0 +1,29 @@
+name: Kintoki PAPIMO Collection
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '10 14 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test
+        run: |
+          echo "Kintoki PAPIMO test started"
+          python --version
+          echo "Test completed"
