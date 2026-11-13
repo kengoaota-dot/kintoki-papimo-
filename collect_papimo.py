@@ -52,7 +52,7 @@ def parse_page(raw, machine, business_date):
             "updated_at": updated.group(1) if updated else None,
             "collected_at_jst": datetime.now(JST).isoformat(),
             "signed_difference": None, "difference_source": "not_analyzed",
-            "errors": [], "graph_status": "not_found", "history_method": "all_html_rows_including_hidden"}
+            "errors": [], "source_missing_fields": [], "graph_status": "not_found", "history_method": "all_html_rows_including_hidden"}
     errors = data["errors"]
     if displayed != business_date.replace("-", ""):
         errors.append("business_date_mismatch")
@@ -98,9 +98,13 @@ def parse_page(raw, machine, business_date):
     if not data["history_count_matches"]:
         errors.append("history_count_or_type_mismatch")
     for row in history:
-        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", row["time"]) or any(number(row[k]) is None for k in ("start", "payout")):
+        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", row["time"]) or any(number(row[k]) is None and row[k] not in ("", "-", "—") for k in ("start", "payout")):
             errors.append("invalid_history_values")
             break
+    for row in history:
+        for key in ("start", "payout"):
+            if number(row[key]) is None:
+                data["source_missing_fields"].append({"row": row["row"], "time": row["time"], "field": key})
     # 'More' only reveals rows already in this HTML; no AJAX pages are discarded.
     data["history_complete"] = data["history_count_matches"] and not any("history" in e for e in errors)
     graph = soup.select_one("#tab-graph-today img")
@@ -166,6 +170,7 @@ def self_test():
     fixture += '</div><div id="tab-history-index"><table class="history"><tbody><tr style="display:none"><td>1</td><td>12:00</td><td>10</td><td>100</td><td>BIG</td></tr><tr><td></td><td>11:00</td><td>90</td><td>10</td><td>REG</td></tr></tbody></table></div>'
     data, rows = parse_page(fixture, 305, "2026-11-13")
     assert data["history_complete"] and len(rows) == 2 and data["bb"] == 1 and not data["errors"], data
+    assert parse_page(fixture.replace("<td>100</td>", "<td></td>"), 305, "2026-11-13")[0]["source_missing_fields"]
     assert "business_date_mismatch" in parse_page(fixture, 305, "2026-11-12")[0]["errors"]
     assert not parse_page(fixture.replace('>REG<', '>BIG<'), 305, "2026-11-13")[0]["history_complete"]
     assert "bb_missing" in parse_page(fixture.replace('BB回数<p>1', 'BB回数<p>-'), 305, "2026-11-13")[0]["errors"]
@@ -207,9 +212,9 @@ def main():
         time.sleep(2)
     complete = sum(r["status"] == "complete" for r in results)
     report = f"Business date: {business_date} | Scope: {args.scope} | Complete: {complete}/{len(machines)}\n"
-    report += "\n|Machine|BB|RB|History|Graph|Status|Errors|\n|---|---:|---:|---:|---|---|---|\n"
+    report += "\n|Machine|BB|RB|History|Graph|Status|Source missing fields|Errors|\n|---|---:|---:|---:|---|---|---|---|\n"
     for r in results:
-        report += "|" + "|".join(str(r.get(k, "")) for k in ["machine", "bb", "rb", "history_count", "graph_status", "status", "errors"]) + "|\n"
+        report += "|" + "|".join(str(r.get(k, "")) for k in ["machine", "bb", "rb", "history_count", "graph_status", "status", "source_missing_fields", "errors"]) + "|\n"
     (output / "validation_report.md").write_text(report, encoding="utf-8")
     if os.getenv("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
