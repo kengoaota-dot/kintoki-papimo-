@@ -39,3 +39,6 @@
 [3台検証Actions #15](https://github.com/kengoaota-dot/kintoki-papimo-/actions/runs/43460152571)
 
 既存データ、分析定義、予測履歴、ChatGPTの既存定期タスクの削除・初期化は行いません。TinyFishは使用しません。
+
+2026-11-14 01:18 日本時間、11月13日営業日の非ジャグラー46機種・102台を実収集し、102/102台で検証成功。保存ZIPも再検査し、全履歴1,399件のBB/RB別照合とPNG102枚の読み込みを確認しました。取得エラー0件。元サイトの出メダル空欄は42台・200件で、そのまま保存しています。
+[102台検証Actions #16](https://github.com/kengoaota-dot/kintoki-papimo-/actions/runs/43460468280)
