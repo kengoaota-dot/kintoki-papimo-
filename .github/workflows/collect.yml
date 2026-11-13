@@ -3,6 +3,8 @@ name: Kintoki PAPIMO Collection
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '10 14 * * *'
 
 permissions:
   contents: read
