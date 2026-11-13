@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: papimo-collection
@@ -32,20 +33,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install parsing and image validation dependencies
-        run: python -m pip install beautifulsoup4==4.14.3 Pillow==12.0.0
-      - name: Test parser and validation safeguards
-        run: python collect_papimo.py --self-test
-      - name: Collect and validate PAPIMO
+      - name: Install numeric graph dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr
+          python -m pip install beautifulsoup4==4.14.3 Pillow==12.0.0 numpy==2.3.5
+      - name: Test definition safeguards
+        run: |
+          python collect_papimo.py --self-test
+          python -m unittest test_definition -v
+      - name: Restore prior data without resetting history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python restore_state.py
+      - name: Collect candidates and audit definition completion
         env:
           PAPIMO_BUSINESS_DATE: ${{ inputs.business_date }}
           PAPIMO_SCOPE: ${{ inputs.scope || 'all' }}
         run: python collect_papimo.py --scope "$PAPIMO_SCOPE"
-      - name: Preserve collection and diagnostics
-        if: always()
+      - name: Preserve numeric state, revisions, checkpoints and exception queues
+        if: ${{ always() && hashFiles('state/state_health.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: papimo-${{ github.run_id }}-${{ github.run_attempt }}
-          path: papimo_collection/
+          name: papimo-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            state/
+            papimo_collection/
           if-no-files-found: error
           retention-days: 90
+
