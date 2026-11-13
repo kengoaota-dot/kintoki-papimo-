@@ -31,3 +31,10 @@ jobs:
           path: papimo_305.html
           if-no-files-found: error
           retention-days: 7
+      - name: Save PAPIMO Data
+        uses: actions/upload-artifact@v4
+        with:
+          name: papimo-305-data
+          path: papimo_data/
+          if-no-files-found: error
+          retention-days: 7
