@@ -23,13 +23,13 @@ FIELDS = ["business_date", "machine", "row", "count", "time", "start", "payout",
 
 
 def fetch(url):
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as response:
                 return response.read()
         except Exception:
-            if attempt == 2:
+            if attempt == 1:
                 raise
             time.sleep(2 * (attempt + 1))
 
@@ -129,38 +129,6 @@ def save_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def collect(machine, business_date, output):
-    folder = output / str(machine)
-    folder.mkdir(parents=True, exist_ok=True)
-    url = f"https://papimo.jp/h/{HALL_ID}/hit/view/{machine}/{business_date.replace('-', '')}"
-    data = {"machine": machine, "business_date": business_date, "source_url": url,
-            "collected_at_jst": datetime.now(JST).isoformat(), "errors": []}
-    try:
-        raw = fetch(url)
-        (folder / "page.html").write_bytes(raw)
-        data, history = parse_page(raw, machine, business_date)
-        data["source_url"] = url
-        data["page_sha256"] = hashlib.sha256(raw).hexdigest()
-        with (folder / "history.csv").open("w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDS)
-            writer.writeheader()
-            writer.writerows(history)
-        if data["graph_url"]:
-            data["graph_url"] = urljoin(url, data["graph_url"])
-            image = fetch(data["graph_url"])
-            (folder / "graph_download.bin").write_bytes(image)
-            data["graph_dimensions"] = validate_png(image)
-            (folder / "graph.png").write_bytes(image)
-            data["graph_sha256"] = hashlib.sha256(image).hexdigest()
-            data["graph_status"] = "saved_and_verified"
-        else:
-            data["errors"].append("today_graph_missing")
-    except Exception as exc:
-        data["errors"].append(type(exc).__name__ + ": " + str(exc))
-    data["status"] = "complete" if not data["errors"] else "incomplete"
-    save_json(folder / "machine.json", data)
-    print(json.dumps({k: data.get(k) for k in ["machine", "business_date", "bb", "rb", "history_count", "history_complete", "graph_status", "status", "errors"]}, ensure_ascii=False), flush=True)
-    return data
 
 
 def self_test():
@@ -183,45 +151,10 @@ def self_test():
     print("Self-tests passed: hidden rows, date, type counts, missing values, invalid image")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--scope", choices=["test", "all"], default=DEFAULT_SCOPE)
-    parser.add_argument("--date", default=os.getenv("PAPIMO_BUSINESS_DATE", ""))
-    parser.add_argument("--self-test", action="store_true")
-    args = parser.parse_args()
-    if args.self_test:
-        self_test()
-        return 0
-    now = datetime.now(JST)
-    # Before opening, collect the previous operating date, never an empty next-day page.
-    business_date = args.date or (now - timedelta(days=int(now.hour < 10))).date().isoformat()
-    datetime.strptime(business_date, "%Y-%m-%d")
-    machines = TEST_MACHINES if args.scope == "test" else ALL_MACHINES
-    assert len(ALL_MACHINES) == len(set(ALL_MACHINES)) == 102
-    run_id = os.getenv("GITHUB_RUN_ID", now.strftime("%Y%m%dT%H%M%S%f"))
-    run_id += "-" + os.getenv("GITHUB_RUN_ATTEMPT", "1")
-    output = Path("papimo_collection") / business_date / run_id
-    output.mkdir(parents=True, exist_ok=False)
-    save_json(output / "run_manifest.json", {"business_date": business_date, "scope": args.scope,
-        "machines": machines, "started_at_jst": now.isoformat(), "code_sha": os.getenv("GITHUB_SHA"),
-        "finalized": False, "note": "Snapshot at collection time, not a guarantee of final closing figures"})
-    results = []
-    for machine in machines:
-        results.append(collect(machine, business_date, output))
-        save_json(output / "collection_summary.json", results)
-        time.sleep(2)
-    complete = sum(r["status"] == "complete" for r in results)
-    report = f"Business date: {business_date} | Scope: {args.scope} | Complete: {complete}/{len(machines)}\n"
-    report += "\n|Machine|BB|RB|History|Graph|Status|Source missing fields|Errors|\n|---|---:|---:|---:|---|---|---|---|\n"
-    for r in results:
-        report += "|" + "|".join(str(r.get(k, "")) for k in ["machine", "bb", "rb", "history_count", "graph_status", "status", "source_missing_fields", "errors"]) + "|\n"
-    (output / "validation_report.md").write_text(report, encoding="utf-8")
-    if os.getenv("GITHUB_STEP_SUMMARY"):
-        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
-            f.write(report)
-    print(f"Validated {complete}/{len(machines)} machines", flush=True)
-    return 0 if complete == len(machines) else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import sys
+    from definition_pipeline import run
+    raise SystemExit(run(sys.modules[__name__]))
+
