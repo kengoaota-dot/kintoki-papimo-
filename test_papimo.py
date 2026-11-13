@@ -15,5 +15,8 @@ with urllib.request.urlopen(request, timeout=30) as response:
     html = response.read()
     print("HTTPステータス:", response.status)
     print("取得サイズ:", len(html), "bytes")
+with open("papimo_305.html", "wb") as f:
+    f.write(html)
 
+print("HTMLファイル保存完了")
 print("接続テスト完了")
