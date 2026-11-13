@@ -1,199 +1,222 @@
-
+"""PAPIMO collector: explicit business date, all HTML history rows, strict validation."""
+import argparse
 import csv
+import hashlib
+import io
 import json
+import os
 import re
 import time
 import urllib.request
-import urllib.parse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from html import unescape
-from datetime import datetime, timezone, timedelta
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
+from PIL import Image
 
-# 金時京急蒲田店
 HALL_ID = "00031691"
-
-# 最初は3台でテスト
-MACHINES = [305, 306, 307]
-
-# 本番用102台（検証後に切り替え）
+TEST_MACHINES = [305, 306, 307]
 ALL_MACHINES = list(range(301, 374)) + list(range(433, 462))
-
+DEFAULT_SCOPE = "test"
 JST = timezone(timedelta(hours=9))
-OUTPUT = Path("papimo_collection")
-OUTPUT.mkdir(exist_ok=True)
+FIELDS = ["business_date", "machine", "row", "count", "time", "start", "payout", "type"]
+
 
 def fetch(url):
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read()
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return response.read()
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
 
-def clean(text):
-    text = re.sub(r"<[^>]+>", "", text)
-    return unescape(text).replace("\xa0", "").strip()
 
-def get_value(html, label):
-    pattern = re.escape(label) + r"\s*<p[^>]*>(.*?)</p>"
-    match = re.search(pattern, html, re.S)
-    return clean(match.group(1)) if match else None
+def number(value):
+    value = value.replace(",", "").strip()
+    return int(value) if re.fullmatch(r"[0-9]+", value) else None
 
-def get_history(html, machine):
-    result = []
-    match = re.search(
-        r'<table class="history"[^>]*>.*?<tbody>(.*?)</tbody>',
-        html, re.S
-    )
-    if not match:
-        return result
 
-    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", match.group(1), re.S)
-
-    for row in rows:
-        cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)
-        if len(cells) != 5:
-            continue
-
-        result.append({
-            "machine": machine,
-            "count": clean(cells[0]),
-            "time": clean(cells[1]),
-            "start": clean(cells[2]),
-            "payout": clean(cells[3]),
-            "type": clean(cells[4]),
-        })
-
-    return result
-
-def collect(machine):
-    url = f"https://papimo.jp/h/{HALL_ID}/hit/view/{machine}"
-    raw = fetch(url)
-    html = raw.decode("utf-8", errors="replace")
-
-    folder = OUTPUT / str(machine)
-    folder.mkdir(exist_ok=True)
-
-    (folder / "page.html").write_bytes(raw)
-
-    title = re.search(r"<title>(.*?)</title>", html, re.S)
-    updated = re.search(r"データ更新日時：([^<]+)", html)
-    graph = re.search(
-        r'id="tab-graph-today".*?<img[^>]+src="([^"]+)"',
-        html, re.S
-    )
-
-    updated_text = clean(updated.group(1)) if updated else None
-
-    data = {
-        "hall_id": HALL_ID,
-        "machine": machine,
-        "page_title": clean(title.group(1)) if title else None,
-        "business_date": (
-            updated_text[:10] if updated_text else None
-        ),
-        "updated_at": updated_text,
-        "collected_at_jst": datetime.now(JST).isoformat(),
-        "bb": get_value(html, "BB回数"),
-        "rb": get_value(html, "RB回数"),
-        "total_start": get_value(html, "総スタート"),
-        "final_start": get_value(html, "最終スタート"),
-        "max_payout": get_value(html, "最大出メダル"),
-        "signed_difference": None,
-        "difference_source": "not_analyzed",
-        "graph_status": "not_found",
-        "errors": [],
-    }
-
-    history = get_history(html, machine)
-
-    with open(
-        folder / "history.csv",
-        "w",
-        newline="",
-        encoding="utf-8-sig"
-    ) as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "machine", "count", "time",
-                "start", "payout", "type"
-            ]
-        )
-        writer.writeheader()
-        writer.writerows(history)
-
+def parse_page(raw, machine, business_date):
+    soup = BeautifulSoup(raw, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    title = soup.title.get_text(strip=True) if soup.title else None
+    date_option = soup.select_one("#display-date option[selected]")
+    displayed = date_option.get("value") if date_option else None
+    updated = re.search(r"データ更新日時[：:]\s*([0-9/]+\s+[0-9:]+)", text)
+    data = {"hall_id": HALL_ID, "machine": machine, "page_title": title,
+            "machine_name": title.split(" - ")[1] if title and len(title.split(" - ")) >= 3 else None,
+            "business_date": business_date, "displayed_date": displayed,
+            "updated_at": updated.group(1) if updated else None,
+            "collected_at_jst": datetime.now(JST).isoformat(),
+            "signed_difference": None, "difference_source": "not_analyzed",
+            "errors": [], "graph_status": "not_found", "history_method": "all_html_rows_including_hidden"}
+    errors = data["errors"]
+    if displayed != business_date.replace("-", ""):
+        errors.append("business_date_mismatch")
+    if not title or "金時京急蒲田" not in title:
+        errors.append("wrong_hall_or_page")
+    if not re.search(rf"0?{machine}番台", text):
+        errors.append("machine_number_mismatch")
+    if not data["machine_name"]:
+        errors.append("machine_name_missing")
+    if "ジャグラー" in (data["machine_name"] or ""):
+        errors.append("juggler_excluded")
+    if not updated:
+        errors.append("updated_at_missing")
+    panel = soup.select_one("#tab-data-today")
+    for key, label in [("bb", "BB回数"), ("rb", "RB回数"), ("total_start", "総スタート"),
+                       ("final_start", "最終スタート"), ("max_payout", "最大出メダル")]:
+        value = None
+        if panel:
+            for cell in panel.select("td"):
+                if cell.get_text(strip=True).startswith(label):
+                    p = cell.find("p")
+                    value = number(p.get_text(strip=True)) if p else None
+                    break
+        data[key] = value
+        if value is None:
+            errors.append(key + "_missing")
+    history = []
+    table = soup.select_one("#tab-history-index table.history")
+    if table:
+        for row in table.select("tbody tr"):
+            cells = row.find_all("td", recursive=False)
+            if len(cells) != 5:
+                errors.append("malformed_history_row")
+                continue
+            values = [c.get_text(strip=True) for c in cells]
+            history.append(dict(zip(FIELDS, [business_date, machine, len(history) + 1] + values)))
     data["history_count"] = len(history)
+    data["history_bb_count"] = sum(r["type"].upper() in ("BIG", "BB") for r in history)
+    data["history_rb_count"] = sum(r["type"].upper() in ("REG", "RB") for r in history)
+    data["history_count_matches"] = (data["bb"] is not None and data["rb"] is not None
+        and len(history) == data["bb"] + data["rb"]
+        and data["history_bb_count"] == data["bb"] and data["history_rb_count"] == data["rb"])
+    if not data["history_count_matches"]:
+        errors.append("history_count_or_type_mismatch")
+    for row in history:
+        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", row["time"]) or any(number(row[k]) is None for k in ("start", "payout")):
+            errors.append("invalid_history_values")
+            break
+    # 'More' only reveals rows already in this HTML; no AJAX pages are discarded.
+    data["history_complete"] = data["history_count_matches"] and not any("history" in e for e in errors)
+    graph = soup.select_one("#tab-graph-today img")
+    data["graph_url"] = graph.get("src") if graph else None
+    return data, history
 
-    if not history:
-        data["errors"].append("history_not_found")
 
-    if graph:
-        graph_url = urllib.parse.urljoin(
-            url, unescape(graph.group(1))
-        )
-        data["graph_url"] = graph_url
+def validate_png(raw):
+    with Image.open(io.BytesIO(raw)) as image:
+        if image.format != "PNG" or min(image.size) < 100:
+            raise ValueError("invalid_graph_format_or_size")
+        size = image.size
+        image.verify()
+    with Image.open(io.BytesIO(raw)) as image:
+        image.load()
+        if image.convert("RGB").getextrema() == ((255, 255), (255, 255), (255, 255)):
+            raise ValueError("blank_graph")
+    return size
 
-        try:
-            image = fetch(graph_url)
-            if image.startswith(b"\x89PNG\r\n\x1a\n"):
-                (folder / "graph.png").write_bytes(image)
-                data["graph_status"] = "saved"
-            else:
-                data["graph_status"] = "invalid_png"
-                data["errors"].append("invalid_graph_image")
-        except Exception as e:
-            data["graph_status"] = "error"
-            data["errors"].append(str(e))
-    else:
-        data["errors"].append("graph_url_not_found")
 
-    if data["bb"] is not None and data["rb"] is not None:
-        try:
-            expected = int(data["bb"].replace(",", "")) + int(
-                data["rb"].replace(",", "")
-            )
-            data["history_count_matches"] = (
-                expected == len(history)
-            )
-            if expected != len(history):
-                data["errors"].append("history_count_mismatch")
-        except ValueError:
-            data["history_count_matches"] = None
-    else:
-        data["history_count_matches"] = None
+def save_json(path, value):
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    (folder / "machine.json").write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
 
-    print(
-        f"{machine}: 履歴{len(history)}件, "
-        f"グラフ={data['graph_status']}, "
-        f"エラー={data['errors']}"
-    )
-
+def collect(machine, business_date, output):
+    folder = output / str(machine)
+    folder.mkdir(parents=True, exist_ok=True)
+    url = f"https://papimo.jp/h/{HALL_ID}/hit/view/{machine}/{business_date.replace('-', '')}"
+    data = {"machine": machine, "business_date": business_date, "source_url": url,
+            "collected_at_jst": datetime.now(JST).isoformat(), "errors": []}
+    try:
+        raw = fetch(url)
+        (folder / "page.html").write_bytes(raw)
+        data, history = parse_page(raw, machine, business_date)
+        data["source_url"] = url
+        data["page_sha256"] = hashlib.sha256(raw).hexdigest()
+        with (folder / "history.csv").open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=FIELDS)
+            writer.writeheader()
+            writer.writerows(history)
+        if data["graph_url"]:
+            data["graph_url"] = urljoin(url, data["graph_url"])
+            image = fetch(data["graph_url"])
+            (folder / "graph_download.bin").write_bytes(image)
+            data["graph_dimensions"] = validate_png(image)
+            (folder / "graph.png").write_bytes(image)
+            data["graph_sha256"] = hashlib.sha256(image).hexdigest()
+            data["graph_status"] = "saved_and_verified"
+        else:
+            data["errors"].append("today_graph_missing")
+    except Exception as exc:
+        data["errors"].append(type(exc).__name__ + ": " + str(exc))
+    data["status"] = "complete" if not data["errors"] else "incomplete"
+    save_json(folder / "machine.json", data)
+    print(json.dumps({k: data.get(k) for k in ["machine", "business_date", "bb", "rb", "history_count", "history_complete", "graph_status", "status", "errors"]}, ensure_ascii=False), flush=True)
     return data
 
-results = []
 
-for machine in MACHINES:
+def self_test():
+    fixture = '<title>金時京急蒲田 - テスト機 - 大当り情報</title><select id="display-date"><option selected value="20261113">2026/11/13</option></select>0305番台 データ更新日時：2026/11/13 23:01<div id="tab-data-today">'
+    for label, value in [("BB回数", 1), ("RB回数", 1), ("総スタート", 100), ("最終スタート", 5), ("最大出メダル", 200)]:
+        fixture += f'<td>{label}<p>{value}</p></td>'
+    fixture += '</div><div id="tab-history-index"><table class="history"><tbody><tr style="display:none"><td>1</td><td>12:00</td><td>10</td><td>100</td><td>BIG</td></tr><tr><td></td><td>11:00</td><td>90</td><td>10</td><td>REG</td></tr></tbody></table></div>'
+    data, rows = parse_page(fixture, 305, "2026-11-13")
+    assert data["history_complete"] and len(rows) == 2 and data["bb"] == 1 and not data["errors"], data
+    assert "business_date_mismatch" in parse_page(fixture, 305, "2026-11-12")[0]["errors"]
+    assert not parse_page(fixture.replace('>REG<', '>BIG<'), 305, "2026-11-13")[0]["history_complete"]
+    assert "bb_missing" in parse_page(fixture.replace('BB回数<p>1', 'BB回数<p>-'), 305, "2026-11-13")[0]["errors"]
     try:
-        results.append(collect(machine))
-    except Exception as e:
-        print(f"{machine}: 取得失敗: {e}")
-        results.append({
-            "machine": machine,
-            "status": "failed",
-            "error": str(e)
-        })
+        validate_png(b"not an image")
+    except Exception:
+        pass
+    else:
+        raise AssertionError("invalid image accepted")
+    print("Self-tests passed: hidden rows, date, type counts, missing values, invalid image")
 
-    time.sleep(2)
 
-(OUTPUT / "collection_summary.json").write_text(
-    json.dumps(results, ensure_ascii=False, indent=2),
-    encoding="utf-8"
-)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scope", choices=["test", "all"], default=DEFAULT_SCOPE)
+    parser.add_argument("--date", default=os.getenv("PAPIMO_BUSINESS_DATE", ""))
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    now = datetime.now(JST)
+    # Before opening, collect the previous operating date, never an empty next-day page.
+    business_date = args.date or (now - timedelta(days=int(now.hour < 10))).date().isoformat()
+    datetime.strptime(business_date, "%Y-%m-%d")
+    machines = TEST_MACHINES if args.scope == "test" else ALL_MACHINES
+    assert len(ALL_MACHINES) == len(set(ALL_MACHINES)) == 102
+    run_id = os.getenv("GITHUB_RUN_ID", now.strftime("%Y%m%dT%H%M%S%f"))
+    run_id += "-" + os.getenv("GITHUB_RUN_ATTEMPT", "1")
+    output = Path("papimo_collection") / business_date / run_id
+    output.mkdir(parents=True, exist_ok=False)
+    save_json(output / "run_manifest.json", {"business_date": business_date, "scope": args.scope,
+        "machines": machines, "started_at_jst": now.isoformat(), "code_sha": os.getenv("GITHUB_SHA"),
+        "finalized": False, "note": "Snapshot at collection time, not a guarantee of final closing figures"})
+    results = []
+    for machine in machines:
+        results.append(collect(machine, business_date, output))
+        save_json(output / "collection_summary.json", results)
+        time.sleep(2)
+    complete = sum(r["status"] == "complete" for r in results)
+    report = f"Business date: {business_date} | Scope: {args.scope} | Complete: {complete}/{len(machines)}\n"
+    report += "\n|Machine|BB|RB|History|Graph|Status|Errors|\n|---|---:|---:|---:|---|---|---|\n"
+    for r in results:
+        report += "|" + "|".join(str(r.get(k, "")) for k in ["machine", "bb", "rb", "history_count", "graph_status", "status", "errors"]) + "|\n"
+    (output / "validation_report.md").write_text(report, encoding="utf-8")
+    if os.getenv("GITHUB_STEP_SUMMARY"):
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+            f.write(report)
+    print(f"Validated {complete}/{len(machines)} machines", flush=True)
+    return 0 if complete == len(machines) else 1
 
-print("3台の収集テスト完了")
+
+if __name__ == "__main__":
+    raise SystemExit(main())
