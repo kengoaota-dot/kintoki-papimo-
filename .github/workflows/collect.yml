@@ -22,6 +22,5 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Test
-              - name: Test PAPIMO 305
+      - name: Test PAPIMO 305
         run: python test_papimo.py
