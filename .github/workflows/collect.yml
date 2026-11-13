@@ -11,7 +11,7 @@ on:
         description: 'Collection scope'
         required: true
         type: choice
-        default: test
+        default: all
         options: [test, all]
   schedule:
     - cron: '10 14 * * *' # 23:10 Asia/Tokyo
@@ -39,7 +39,7 @@ jobs:
       - name: Collect and validate PAPIMO
         env:
           PAPIMO_BUSINESS_DATE: ${{ inputs.business_date }}
-          PAPIMO_SCOPE: ${{ inputs.scope || 'test' }}
+          PAPIMO_SCOPE: ${{ inputs.scope || 'all' }}
         run: python collect_papimo.py --scope "$PAPIMO_SCOPE"
       - name: Preserve collection and diagnostics
         if: always()
