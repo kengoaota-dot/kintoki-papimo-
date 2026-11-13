@@ -24,3 +24,10 @@ jobs:
 
       - name: Test PAPIMO 305
         run: python test_papimo.py
+      - name: Save PAPIMO HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: papimo-305-html
+          path: papimo_305.html
+          if-no-files-found: error
+          retention-days: 7
