@@ -23,7 +23,5 @@ jobs:
           python-version: '3.12'
 
       - name: Test
-        run: |
-          echo "Kintoki PAPIMO test started"
-          python --version
-          echo "Test completed"
+              - name: Test PAPIMO 305
+        run: python test_papimo.py
