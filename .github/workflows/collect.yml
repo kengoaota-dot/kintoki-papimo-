@@ -22,8 +22,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Test PAPIMO 305
-        run: python test_papimo.py
+      - name: Test PAPIMO 3 Machines
+        run: python collect_papimo.py
       - name: Save PAPIMO HTML
         uses: actions/upload-artifact@v4
         with:
@@ -36,5 +36,12 @@ jobs:
         with:
           name: papimo-305-data
           path: papimo_data/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save PAPIMO 3 Machines
+        uses: actions/upload-artifact@v4
+        with:
+          name: papimo-3-machines
+          path: papimo_collection/
           if-no-files-found: error
           retention-days: 7
