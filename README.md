@@ -18,7 +18,8 @@ GitHubの混雑で開始が遅れる場合があります。営業時間中の�
 5. 累積Excelへ追記し、再読込で記録ID・全履歴行ID・行数を検証。
 6. Excel、SQLite、CSV、数値特徴量、軽量索引、例外キュー、再開位置をArtifactsへ保存。
 
-Workの実行・画像の手動確認・Library反映・追加APIキーは不要。
+GitHub収集本体はWorkの実行・画像の手動確認・追加APIキーなしで動きます。
+既存Libraryへの反映は、下記のWork同期で行います。
 TinyFish、有料APIは使用しません。画像はメモリ上で処理し新規PNGや画像ZIPは保存しません。
 通常は当日グラフだけを使い、3日/7日グラフや予測・SIM・AT/有利区間分析は実行しません。
 23:10の値は閉店確定値とは限らず、営業日・ページ更新・グラフ更新・取得時刻を区別します。
@@ -71,3 +72,31 @@ backfill_plan.json の business_date、machine、confirmed_missing=true、canoni
 
 履歴接続、訂正、台/営業日分離、元値復帰、画像識別子、自動推定と目視の区別、
 Excelの重複防止・既存数式保持、欠測警告と真のエラーを検証します。
+
+## 既存Libraryとの同期
+
+23:10 JSTのGitHub収集が終了した後、既存のWork収集タスクが最新Artifactを読み、
+現在のExcel・日別CSV・原記録・取得状況・高速分析索引へ追記同期します。
+Library認証を使う同期部分にはWorkの実行が必要です。公開GitHubへLibraryの内容や認証情報を保存しません。
+
+- `sync_library_data.py`: 保存済みSQLiteと現在のLibraryファイルから差分・追記計画を作成。再実行は同じ記録IDを二重登録しません。
+- `sync_library_workbook.mjs`: Workのartifact-tool環境で既存Excelの3シートに追記。既存行・数式・他シート・テーブルを保持します。
+- `test_library_sync.py`: 再実行、元データ保護、未取得・符号保留の扱いを検証。
+
+自動推定値は出所・元の取得時刻・推定誤差とともに保存します。
+符号が確定しない値は参考値だけを残し、分析用の確定差枚欄は空欄です。
+既存の目視確認値や新しい取得記録は自動推定で上書きしません。
+保存先は現在の同一ファイルIDを解決し、版番号を確認して更新します。
+Excel・原記録・日別CSVの保存成功を確認した後に高速分析索引を更新し、同期状況を記録します。
+分析定義・固定済み予測・バックテスト履歴・他の定期タスクは変更しません。
+
+Work側の実行例（パスはその実行で取得したローカルパス）:
+
+```sh
+python sync_library_data.py --artifact-dir ARTIFACT --library-dir CURRENT --out STAGED --run-id RUN_ID
+node --max-old-space-size=8192 sync_library_workbook.mjs --template CURRENT/WORKBOOK.xlsx --patch STAGED/workbook_patch.json --output OUTPUT/WORKBOOK.xlsx
+python -m unittest test_library_sync -v
+```
+
+これは同期計画とローカルExcelを作る処理です。Libraryへの保存はWorkの接続機能で、競合確認・保存結果確認を行って完了させます。
+当日の途中時点の値を閉店確定値として扱ったり、当日値を前日までの予測入力へ混入させたりしません。
