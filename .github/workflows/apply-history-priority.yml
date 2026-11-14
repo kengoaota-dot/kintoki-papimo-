@@ -1,0 +1,292 @@
+name: Apply audited BB-RB history priority v1 and recollect
+
+on:
+  workflow_dispatch:
+    inputs:
+      business_date:
+        description: 'Business date YYYY-MM-DD'
+        required: true
+        type: string
+        default: '2026-11-14'
+      scope:
+        description: 'Collection scope'
+        required: true
+        type: choice
+        options: [all, test]
+        default: all
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: kintoki-install-history-priority
+  cancel-in-progress: false
+
+jobs:
+  install-and-recollect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply append-only audited BB-RB count policy
+        shell: bash
+        run: |
+          python - <<'PY'
+          """Apply audited single-event BB/RB history precedence to the existing PAPIMO repo.
+
+          Run in repository root. Preserves original SQLite snapshots, workbook columns, and raw history.
+          Requires exactly the known source anchors; aborts before modifying files if unexpected.
+          """
+          from pathlib import Path
+
+
+          def replace_one(source, old, new, path):
+              if source.count(old) != 1:
+                  raise RuntimeError(f'{path}: expected one exact anchor, found {source.count(old)}: {old[:90]!r}')
+              return source.replace(old, new, 1)
+
+
+          def modify_definition(content, path):
+              if 'def reconcile_one_count(' in content:
+                  return content
+              rule = '''\n\ndef reconcile_one_count(data, history, previous=None):
+              """After a stable recheck, prefer history counts for exactly one BB or RB discrepancy."""
+              data['display_bb'] = data.get('bb')
+              data['display_rb'] = data.get('rb')
+              data['source_history_count_matches'] = bool(data.get('history_count_matches'))
+              data['history_count_reconciled'] = False
+              if data['source_history_count_matches'] or previous is None:
+                  return data
+              if previous.get('history_count_matches') is not False:
+                  return data
+              for key in ('business_date', 'machine', 'machine_code', 'bb', 'rb',
+                          'history_bb_count', 'history_rb_count', 'history_count'):
+                  if previous.get(key) != data.get(key):
+                      return data
+              if any(error != 'history_count_or_type_mismatch' for error in data.get('errors', [])):
+                  return data
+              values = [data.get(key) for key in ('bb', 'rb', 'history_bb_count',
+                                                  'history_rb_count', 'history_count')]
+              if not all(type(value) is int and value >= 0 for value in values):
+                  return data
+              bb, rb, hbb, hrb, total = values
+              if total != len(history) or total != hbb + hrb:
+                  return data
+              # One-event difference in either BB or RB; never mask a two-event discrepancy.
+              if abs(hbb - bb) + abs(hrb - rb) != 1:
+                  return data
+              data['bb'] = hbb
+              data['rb'] = hrb
+              data['history_count_matches'] = True
+              data['history_count_reconciled'] = True
+              data['history_count_reconciliation'] = {
+                  'policy': 'history_priority_after_stable_recheck_single_event_v1',
+                  'original_display_bb': bb, 'original_display_rb': rb,
+                  'adopted_history_bb': hbb, 'adopted_history_rb': hrb,
+                  'bb_delta': hbb - bb, 'rb_delta': hrb - rb,
+                  'previous_snapshot_id': previous.get('snapshot_id'),
+                  'warning': 'Original display differs; full source history is retained. No fabricated events.',
+                  'probabilities': 'Page-displayed probabilities are original and not recalculated',
+              }
+              data['errors'] = [error for error in data.get('errors', [])
+                                if error != 'history_count_or_type_mismatch']
+              return data
+
+
+          '''
+              content = replace_one(content, '\ndef quality(data):', '\n' + rule + 'def quality(data):', path)
+              content = replace_one(content, "        metadata(raw,data)\n        data['source_url']=",
+                                    "        metadata(raw,data)\n        reconcile_one_count(data,history,recheck_of)\n        data['source_url']=", path)
+              content = replace_one(content,
+                                    "    data['field_sources']['signed_difference']=data.get('difference_source','unavailable')",
+                                    "    if data.get('history_count_reconciled'):\n"
+                                    "        data['field_sources']['bb']='history_count_tolerance_reconciled'\n"
+                                    "        data['field_sources']['rb']='history_count_tolerance_reconciled'\n"
+                                    "    data['field_sources']['signed_difference']=data.get('difference_source','unavailable')", path)
+              content = replace_one(content,
+                  "            'reason':'recheck_failed_initial_kept' if fatal else 'matched' if selected.get('history_count_matches') else 'source_summary_history_still_disagree',",
+                  "            'reason':'recheck_failed_initial_kept' if fatal else 'history_count_tolerance_reconciled' if selected.get('history_count_reconciled') else 'matched' if selected.get('history_count_matches') else 'source_summary_history_still_disagree',", path)
+              content = replace_one(content,
+                  "'history_count','history_count_matches','source_missing_fields','missing_items','status','snapshot_id']",
+                  "'history_count','history_count_matches','source_missing_fields','missing_items','status','snapshot_id',\n"
+                  "    'display_bb','display_rb','history_bb_count','history_rb_count','source_history_count_matches',\n"
+                  "    'history_count_reconciled','history_count_reconciliation']", path)
+              return content
+
+
+          def modify_pipeline(content, path):
+              if 'source_history_reconciliations=[]' in content:
+                  return content
+              content = replace_one(content, '    source_history_mismatches=[]',
+                                    '    source_history_mismatches=[]\n    source_history_reconciliations=[]', path)
+              content = replace_one(content, "        if not r.get('history_count_matches'):",
+                  "        if r.get('history_count_reconciled'):\n"
+                  "            source_history_reconciliations.append({\n"
+                  "                'business_date':day,'machine':r['machine'],'snapshot_id':r['snapshot_id'],\n"
+                  "                'display_bb':r.get('display_bb'),'display_rb':r.get('display_rb'),\n"
+                  "                'history_bb':r.get('history_bb_count'),'history_rb':r.get('history_rb_count'),\n"
+                  "                'bb_delta':(r.get('history_count_reconciliation') or {}).get('bb_delta'),\n"
+                  "                'rb_delta':(r.get('history_count_reconciliation') or {}).get('rb_delta'),\n"
+                  "                'method':'single_event_after_stable_recheck',\n"
+                  "                'status':'reconciled_not_exact_source_match'})\n"
+                  "        if not r.get('history_count_matches'):", path)
+              content = replace_one(content, "    if not results:failures.append({'error':'no_machines'})",
+                  "    write_csv(output/'history_count_reconciliations.csv',source_history_reconciliations,\n"
+                  "        ['business_date','machine','snapshot_id','display_bb','display_rb',\n"
+                  "         'history_bb','history_rb','bb_delta','rb_delta','method','status'])\n"
+                  "    if not results:failures.append({'error':'no_machines'})", path)
+              content = replace_one(content,
+                  "       'source_history_mismatches':source_history_mismatches,",
+                  "       'source_history_mismatches':source_history_mismatches,\n"
+                  "       'source_history_reconciliations':source_history_reconciliations,\n"
+                  "       'source_history_exact_matches':sum(r.get('source_history_count_matches') is True for r in results),", path)
+              content = replace_one(content,
+                  'f"Source summary/history discrepancies: {len(source_history_mismatches)}\\n\\n"',
+                  'f"Unresolved source summary/history discrepancies: {len(source_history_mismatches)}\\n\\n"\n'
+                  '       f"One-event history-priority reconciliations: {len(source_history_reconciliations)}\\n\\n"', path)
+              return content
+
+
+          def modify_workbook(content, path):
+              if "RECONCILIATION_COLUMNS={" in content:
+                  return content
+              columns = '''\nRECONCILIATION_COLUMNS={
+           'snapshot_id':'記録ID','business_date':'営業日','machine':'台番号',
+           'display_bb':'元表示BB','display_rb':'元表示RB',
+           'history_bb_count':'履歴BB（採用値）','history_rb_count':'履歴RB（採用値）',
+           'source_history_count_matches':'元表示と履歴の厳密一致',
+           'history_count_reconciled':'±1履歴補正適用',
+           'history_count_reconciliation':'補正根拠'
+          }
+          '''
+              content = replace_one(content, '\nHISTORY_COLUMNS={', '\n' + columns + 'HISTORY_COLUMNS={', path)
+              content = replace_one(content, "    if '運用定義' not in wb.sheetnames:",
+                  "    corrections=[r for r in all_records if r.get('history_count_reconciled')]\n"
+                  "    stats['BB_RB履歴補正']=append_rows(wb,'BB_RB履歴補正',RECONCILIATION_COLUMNS,corrections,'snapshot_id')\n"
+                  "    if '運用定義' not in wb.sheetnames:", path)
+              anchor = "        ws.column_dimensions['A'].width=20;ws.column_dimensions['B'].width=100"
+              content = replace_one(content, anchor, anchor + "\n"
+                  "    rules=wb['運用定義']\n"
+                  "    rule_name='BB/RB±1履歴優先補正 v1'\n"
+                  "    if not any(row[0]==rule_name for row in rules.iter_rows(min_row=2,values_only=True)):\n"
+                  "        rules.append((rule_name,'再取得でもBB/RBと履歴件数が不変で、BBまたはRBが1件のみ異なるとき履歴側を採用。元表示と補正理由を別シートに保持し、履歴を捏造しない。'))", path)
+              return content
+
+
+          def modify_tests(content, path):
+              if 'test_history_priority_after_stable_single_event_recheck' in content:
+                  return content
+              content = replace_one(content, 'from definition_pipeline import quality',
+                                    'from definition_pipeline import quality,reconcile_one_count', path)
+              tests = '''    def test_history_priority_after_stable_single_event_recheck(self):
+                  history=[{'type':'BIG','time':'12:00'},{'type':'REG','time':'11:00'}]
+                  old={**record(),'machine':309,'bb':2,'rb':1,'history_bb_count':1,'history_rb_count':1,
+                       'history_count':2,'history_count_matches':False,'errors':['history_count_or_type_mismatch'],
+                       'snapshot_id':'prior-mismatch'}
+                  current=reconcile_one_count(copy.deepcopy(old),history,old)
+                  self.assertEqual((current['bb'],current['rb']),(1,1))
+                  self.assertEqual((current['display_bb'],current['display_rb']),(2,1))
+                  self.assertTrue(current['history_count_matches'])
+                  self.assertFalse(current['source_history_count_matches'])
+                  self.assertTrue(current['history_count_reconciled'])
+                  self.assertEqual(current['history_count_reconciliation']['bb_delta'],-1)
+                  self.assertEqual(current['errors'],[])
+                  self.assertEqual(len(history),2)
+                  self.assertEqual(quality(current)['status'],'complete')
+
+              def test_history_priority_requires_stable_recheck_and_single_event(self):
+                  history=[{'type':'BIG'},{'type':'REG'}]
+                  base={**record(),'machine':309,'bb':2,'rb':1,'history_bb_count':1,'history_rb_count':1,
+                        'history_count':2,'history_count_matches':False,'errors':['history_count_or_type_mismatch']}
+                  self.assertFalse(reconcile_one_count(copy.deepcopy(base),history)['history_count_reconciled'])
+                  dual={**base,'bb':2,'rb':2}
+                  self.assertFalse(reconcile_one_count(copy.deepcopy(dual),history,dual)['history_count_reconciled'])
+                  drift={**base,'history_count':3}
+                  self.assertFalse(reconcile_one_count(copy.deepcopy(drift),history,base)['history_count_reconciled'])
+                  corrected={**base,'history_count_matches':True,'bb':1,'rb':1}
+                  self.assertFalse(reconcile_one_count(copy.deepcopy(corrected),history,base)['history_count_reconciled'])
+                  malformed={**base,'errors':['history_count_or_type_mismatch','malformed_history_row']}
+                  self.assertFalse(reconcile_one_count(copy.deepcopy(malformed),history,malformed)['history_count_reconciled'])
+
+          '''
+              return replace_one(content,
+                                 '    def test_recheck_only_mismatches_once_and_keeps_original(self):',
+                                 tests+'    def test_recheck_only_mismatches_once_and_keeps_original(self):', path)
+
+
+          def modify_readme(content, path):
+              if 'BB/RBの表示値と掲載履歴が異なる場合、最初に1回再取得' in content:
+                  return content
+              before = '元サイトのBB/RB表示と掲載履歴の不一致も、両方の原値を保存してデータ品質警告に残します。架空の不足行を補いません。'
+              after = ('BB/RBの表示値と掲載履歴が異なる場合、最初に1回再取得して照合します。'
+                       '再取得前後で表示値と履歴件数が不変で、差がBBまたはRBのどちらか1件（±1）だけなら、履歴側の件数を採用します。'
+                       '元表示BB/RB、採用値、差分、補正元スナップショット、理由をSQLiteとCSVに保持します。'
+                       'Excelでは既存「台データ」列に採用値を書き、新しい「BB_RB履歴補正」シートへ元値と補正根拠を追記します。'
+                       '原表示のBB/RB確率は再計算せずそのまま残します。'
+                       '2件以上の差、再取得時の値変化、履歴の形式異常は従来どおり未解決として残します。'
+                       '履歴行を捏造しません。')
+              return replace_one(content, before, after, path)
+
+
+          def main():
+              mods = {
+                  'definition_pipeline.py': modify_definition,
+                  'github_pipeline.py': modify_pipeline,
+                  'github_workbook.py': modify_workbook,
+                  'test_github_automatic.py': modify_tests,
+                  'README.md': modify_readme,
+              }
+              staged = {}
+              for name, function in mods.items():
+                  path = Path(name)
+                  old = path.read_text(encoding='utf-8')
+                  new = function(old, name)
+                  if name.endswith('.py'):
+                      compile(new, name, 'exec')
+                  staged[path] = (old, new)
+              for path, (old, new) in staged.items():
+                  if old != new:
+                      path.write_text(new, encoding='utf-8')
+                  print(f'{path}: {"patched" if old != new else "already patched"}')
+              print('Patch staged. Run unit tests before committing changes.')
+
+
+          if __name__ == '__main__':
+              main()
+          PY
+      - name: Install test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check beautifulsoup4==4.14.3 Pillow==12.0.0 numpy==2.3.5 openpyxl==3.1.5
+      - name: Validate all definitions and history-priority tests
+        run: |
+          git diff --check
+          python collect_papimo.py --self-test
+          python -m unittest test_definition test_github_automatic -v
+      - name: Commit only validated code changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md definition_pipeline.py github_pipeline.py github_workbook.py test_github_automatic.py
+          if ! git diff --cached --quiet; then
+            git commit -m "Add audited BB-RB plus-minus-one history reconciliation"
+            git push origin HEAD:main
+          else
+            echo "History reconciliation policy already installed."
+          fi
+      - name: Recollect selected day with installed code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_DAY: ${{ inputs.business_date }}
+          TARGET_SCOPE: ${{ inputs.scope }}
+        run: |
+          gh workflow run collect.yml --ref main -f "business_date=${TARGET_DAY}" -f "scope=${TARGET_SCOPE}"
+          echo "New collection workflow dispatched for ${TARGET_DAY}, scope=${TARGET_SCOPE}."
+          echo "Collection and scoring results must be checked in the separate collection run."
