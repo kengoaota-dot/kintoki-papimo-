@@ -1,0 +1,51 @@
+name: Kintoki PAPIMO Five Day Backfill
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: papimo-collection
+  cancel-in-progress: false
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PAPIMO_AUTOMATIC: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr
+          python -m pip install beautifulsoup4==4.14.3 Pillow==12.0.0 numpy==2.3.5 openpyxl==3.1.5
+      - name: Test safeguards
+        run: |
+          python collect_papimo.py --self-test
+          python -m unittest test_definition test_github_automatic -v
+      - name: Restore cumulative data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python restore_state.py
+      - name: Collect November 8 through 12 for all 102 machines
+        run: |
+          failed=0
+          for business_day in 2026-11-08 2026-11-09 2026-11-10 2026-11-11 2026-11-12; do
+            echo "Collecting $business_day"
+            PAPIMO_BUSINESS_DATE="$business_day" python collect_papimo.py --scope all || failed=1
+          done
+          exit "$failed"
+      - name: Save cumulative state and all five daily audits
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: papimo-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            state/
+            papimo_collection/
+          if-no-files-found: error
+          retention-days: 90
