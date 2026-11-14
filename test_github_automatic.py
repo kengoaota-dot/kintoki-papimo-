@@ -99,5 +99,21 @@ class AutomaticTests(unittest.TestCase):
                 audit=finalize_export(collect_papimo,store,r['business_date'],out,[r],'run',base)
             self.assertFalse(audit['automation_complete']);self.assertTrue(audit['technical_failures']);store.close()
 
+    def test_site_count_discrepancy_stays_incomplete_without_fabrication(self):
+        import collect_papimo
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);store=Store(root/'state'/'papimo.sqlite3');out=root/'output';out.mkdir()
+            data=quality({**record(),'bb':2,'history_count':1,'history_bb_count':1,'history_rb_count':0,
+                'history_count_matches':False,'errors':['history_count_or_type_mismatch']})
+            original=[{'row':1,'count':'1','time':'11:00','start':'100','payout':'10','type':'BIG'}]
+            r,_=store.put(data,original,'run')
+            base={'required_machines':1,'history_count_matches':0,'source_missing_fields':0,'work_confirmed_difference':0}
+            with patch.dict(os.environ,{'GITHUB_STEP_SUMMARY':''}):
+                audit=finalize_export(collect_papimo,store,r['business_date'],out,[r],'run',base)
+            self.assertTrue(audit['automation_complete']);self.assertFalse(audit['data_complete'])
+            self.assertEqual(len(audit['source_history_mismatches']),1)
+            self.assertEqual(len(store.history(r)),1)
+            self.assertIn('history_count_or_type_mismatch',r['errors']);store.close()
+
 
 if __name__=='__main__':unittest.main()

@@ -247,7 +247,7 @@ def exports(collector,store,day,output,results,run_id,reviews_dir='reviews'):
 
 def run(collector):
     parser=argparse.ArgumentParser()
-    parser.add_argument('--scope',choices=['test','all'],default='all')
+    parser.add_argument('--scope',choices=['test','all','saved'],default='all')
     parser.add_argument('--date',default=os.getenv('PAPIMO_BUSINESS_DATE',''))
     parser.add_argument('--state-dir',default='state')
     parser.add_argument('--restore-dir',default='restored')
@@ -277,6 +277,17 @@ def run(collector):
         if not imported:
             raise RuntimeError('No prior state or legacy records restored; refusing silent reinitialization')
     collector.save_json(Path(args.state_dir)/'state_health.json',{'restored':True,'days':store.days(),'run_id':run_id})
+    if args.scope=='saved':
+        if os.getenv('PAPIMO_AUTOMATIC')!='1':raise ValueError('saved scope requires GitHub automatic mode')
+        results=store.current(day)
+        inventory_row=store.db.execute('SELECT value FROM meta WHERE key=?',('machine_inventory',)).fetchone()
+        expected=json.loads(inventory_row[0])['machines'] if inventory_row else collector.ALL_MACHINES
+        if sorted(r['machine'] for r in results)!=sorted(expected):
+            raise ValueError('Saved state does not contain the complete target inventory; no initialization or silent partial export')
+        audit=exports(collector,store,day,output,[quality(dict(r)) for r in results],run_id,args.reviews_dir)
+        store.close()
+        print(json.dumps(audit,ensure_ascii=False),flush=True)
+        return 0 if audit['automation_complete'] else 2
     machines=collector.TEST_MACHINES if args.scope=='test' else inventory(collector,store)
     reviews=read_reviews(args.reviews_dir,day)
     results=[]
