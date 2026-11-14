@@ -20,6 +20,15 @@ MACHINE_COLUMNS={
  'graph_updated_at_jst':'グラフ更新日時（表示なしは空欄）','collected_at_jst':'取得日時JST',
  'source_url':'台ページURL','graph_url':'当日グラフURL','graph_sha256':'画像SHA256',
  'history_id':'履歴系列ID','status':'データ品質','collection_mode':'収集モード'}
+
+RECONCILIATION_COLUMNS={
+ 'snapshot_id':'記録ID','business_date':'営業日','machine':'台番号',
+ 'display_bb':'元表示BB','display_rb':'元表示RB',
+ 'history_bb_count':'履歴BB（採用値）','history_rb_count':'履歴RB（採用値）',
+ 'source_history_count_matches':'元表示と履歴の厳密一致',
+ 'history_count_reconciled':'±1履歴補正適用',
+ 'history_count_reconciliation':'補正根拠'
+}
 HISTORY_COLUMNS={'key':'履歴行ID','history_id':'履歴系列ID','business_date':'営業日','machine':'台番号',
  'machine_code':'機種コード','row':'表示順','count':'原回数','time':'時刻','start':'G数原表示',
  'payout':'出メダル原表示','type':'種別'}
@@ -88,6 +97,8 @@ def build_workbook(store,day,run_id,audit,state_dir,restore_dir='restored'):
       '取得状況':append_rows(wb,'取得状況',EXCEPTION_COLUMNS,exceptions,'key'),
       '実行履歴':append_rows(wb,'実行履歴',RUN_COLUMNS,[{**audit,'run_id':run_id,'business_date':day,
           'note':'自動推定は目視確認・サイト実測と区別。空欄と符号保留は例外として保存。Library既存Excelは変更しない。'}],'run_id')}
+    corrections=[r for r in all_records if r.get('history_count_reconciled')]
+    stats['BB_RB履歴補正']=append_rows(wb,'BB_RB履歴補正',RECONCILIATION_COLUMNS,corrections,'snapshot_id')
     if '運用定義' not in wb.sheetnames:
         ws=wb.create_sheet('運用定義')
         for row in [('項目','定義'),('収集方式','GitHub自動収集 v2：収集・軸校正・画像推定・Excel・検証・保存'),
@@ -97,6 +108,10 @@ def build_workbook(store,day,run_id,audit,state_dir,restore_dir='restored'):
           ('旧記録','既存SQLiteと本Excelの行・シートを保持して新しい記録IDを追記。訂正前は削除しない。'),
           ('保存先','GitHub Actions Artifacts。既存Library Excel・分析定義・予測履歴は変更しない。')]:ws.append(row)
         ws.column_dimensions['A'].width=20;ws.column_dimensions['B'].width=100
+    rules=wb['運用定義']
+    rule_name='BB/RB±1履歴優先補正 v1'
+    if not any(row[0]==rule_name for row in rules.iter_rows(min_row=2,values_only=True)):
+        rules.append((rule_name,'再取得でもBB/RBと履歴件数が不変で、BBまたはRBが1件のみ異なるとき履歴側を採用。元表示と補正理由を別シートに保持し、履歴を捏造しない。'))
     before={ws.title:ws.max_row for ws in wb}
     temp=dest.with_suffix('.tmp.xlsx');wb.save(temp);wb.close()
     check=load_workbook(temp,read_only=True,data_only=False)

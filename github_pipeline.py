@@ -9,6 +9,7 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
     accepted={'work_visual_confirmed','automatic_image_estimate'}
     failures=[]
     source_history_mismatches=[]
+    source_history_reconciliations=[]
     field_audit=[{'business_date':day,'machine':r['machine'],'snapshot_id':r['snapshot_id'],
         'collected_at_jst':r['collected_at_jst'],**f} for r in results for f in r.get('history_field_audit',[])]
     from collections import Counter
@@ -25,6 +26,15 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
         # Preserve both source values and the mismatch; never fabricate the absent row.
         fatal=[e for e in r.get('errors',[]) if e!='history_count_or_type_mismatch']
         if fatal:failures.append({'machine':r['machine'],'errors':fatal})
+        if r.get('history_count_reconciled'):
+            source_history_reconciliations.append({
+                'business_date':day,'machine':r['machine'],'snapshot_id':r['snapshot_id'],
+                'display_bb':r.get('display_bb'),'display_rb':r.get('display_rb'),
+                'history_bb':r.get('history_bb_count'),'history_rb':r.get('history_rb_count'),
+                'bb_delta':(r.get('history_count_reconciliation') or {}).get('bb_delta'),
+                'rb_delta':(r.get('history_count_reconciliation') or {}).get('rb_delta'),
+                'method':'single_event_after_stable_recheck',
+                'status':'reconciled_not_exact_source_match'})
         if not r.get('history_count_matches'):
             source_history_mismatches.append({'machine':r['machine'],'bb':r.get('bb'),'rb':r.get('rb'),
                 'history_count':r.get('history_count'),'history_bb_count':r.get('history_bb_count'),
@@ -32,11 +42,16 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
         if r.get('reading_status') not in accepted:failures.append({'machine':r['machine'],'error':'graph_numeric_validation_failed'})
         for key in ['bb','rb','total_start','final_start','max_payout','machine_name','machine_code']:
             if r.get(key) is None:failures.append({'machine':r['machine'],'error':'required_basic_missing:'+key})
+    write_csv(output/'history_count_reconciliations.csv',source_history_reconciliations,
+        ['business_date','machine','snapshot_id','display_bb','display_rb',
+         'history_bb','history_rb','bb_delta','rb_delta','method','status'])
     if not results:failures.append({'error':'no_machines'})
     # Kept for compatibility with old consumers; accepted automatic estimates need no Work queue.
     collector.save_json(output/'work_review_queue.json',[])
     audit={**legacy_audit,'mode':'github_automatic_v2',
        'source_history_mismatches':source_history_mismatches,
+       'source_history_reconciliations':source_history_reconciliations,
+       'source_history_exact_matches':sum(r.get('source_history_count_matches') is True for r in results),
        'graph_candidates':sum(r.get('reading_status') in accepted for r in results),
        'automatically_read':sum(r.get('reading_status')=='automatic_image_estimate' for r in results),
        'uncertain_signs':sum(r.get('sign_judgment')=='uncertain_near_zero' for r in results),
@@ -60,7 +75,8 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
        f"Previously Work-confirmed images: {audit['work_confirmed_difference']}\n\n"
        f"Excel: {audit['excel_status']} (state/papimo.xlsx)\n\n"
        f"History BB/RB matches: {audit['history_count_matches']}/{len(results)}\n\n"
-       f"Source summary/history discrepancies: {len(source_history_mismatches)}\n\n"
+       f"Unresolved source summary/history discrepancies: {len(source_history_mismatches)}\n\n"
+       f"One-event history-priority reconciliations: {len(source_history_reconciliations)}\n\n"
        f"Source-side missing fields: {audit['source_missing_fields']}\n\nNear-zero signs held open: {audit['uncertain_signs']}\n\n"
        f"Data completeness: {'COMPLETE' if audit['data_complete'] else 'PARTIAL — exceptions are saved; no fabricated values'}\n\n"
        f"Technical failures: {len(failures)}\n\nNo Work execution, human review, API key or Library writeback is required. "

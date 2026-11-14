@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from openpyxl import load_workbook
 from collection_store import Store
-from definition_pipeline import quality
+from definition_pipeline import quality,reconcile_one_count
 from graph_features import automatic_estimate,GRAPH_METHOD_VERSION
 from github_workbook import build_workbook
 from github_pipeline import finalize_export
@@ -26,6 +26,36 @@ def record():
 
 
 class AutomaticTests(unittest.TestCase):
+    def test_history_priority_after_stable_single_event_recheck(self):
+        history=[{'type':'BIG','time':'12:00'},{'type':'REG','time':'11:00'}]
+        old={**record(),'machine':309,'bb':2,'rb':1,'history_bb_count':1,'history_rb_count':1,
+             'history_count':2,'history_count_matches':False,'errors':['history_count_or_type_mismatch'],
+             'snapshot_id':'prior-mismatch'}
+        current=reconcile_one_count(copy.deepcopy(old),history,old)
+        self.assertEqual((current['bb'],current['rb']),(1,1))
+        self.assertEqual((current['display_bb'],current['display_rb']),(2,1))
+        self.assertTrue(current['history_count_matches'])
+        self.assertFalse(current['source_history_count_matches'])
+        self.assertTrue(current['history_count_reconciled'])
+        self.assertEqual(current['history_count_reconciliation']['bb_delta'],-1)
+        self.assertEqual(current['errors'],[])
+        self.assertEqual(len(history),2)
+        self.assertEqual(quality(current)['status'],'complete')
+
+    def test_history_priority_requires_stable_recheck_and_single_event(self):
+        history=[{'type':'BIG'},{'type':'REG'}]
+        base={**record(),'machine':309,'bb':2,'rb':1,'history_bb_count':1,'history_rb_count':1,
+              'history_count':2,'history_count_matches':False,'errors':['history_count_or_type_mismatch']}
+        self.assertFalse(reconcile_one_count(copy.deepcopy(base),history)['history_count_reconciled'])
+        dual={**base,'bb':2,'rb':2}
+        self.assertFalse(reconcile_one_count(copy.deepcopy(dual),history,dual)['history_count_reconciled'])
+        drift={**base,'history_count':3}
+        self.assertFalse(reconcile_one_count(copy.deepcopy(drift),history,base)['history_count_reconciled'])
+        corrected={**base,'history_count_matches':True,'bb':1,'rb':1}
+        self.assertFalse(reconcile_one_count(copy.deepcopy(corrected),history,base)['history_count_reconciled'])
+        malformed={**base,'errors':['history_count_or_type_mismatch','malformed_history_row']}
+        self.assertFalse(reconcile_one_count(copy.deepcopy(malformed),history,malformed)['history_count_reconciled'])
+
     def test_recheck_only_mismatches_once_and_keeps_original(self):
         import collect_papimo
         from definition_pipeline import recheck_history_mismatches

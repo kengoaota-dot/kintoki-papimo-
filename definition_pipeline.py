@@ -18,7 +18,9 @@ DAILY_FIELDS=['business_date','machine','machine_name','machine_code','bb','rb',
     'signed_difference','highest_difference','lowest_difference','max_range',
     'rounding_unit','estimated_error','sign_judgment','difference_source','reading_status',
     'updated_at','graph_updated_at_jst','collected_at_jst','source_url','graph_url',
-    'history_count','history_count_matches','source_missing_fields','missing_items','status','snapshot_id']
+    'history_count','history_count_matches','source_missing_fields','missing_items','status','snapshot_id',
+    'display_bb','display_rb','history_bb_count','history_rb_count','source_history_count_matches',
+    'history_count_reconciled','history_count_reconciliation']
 HISTORY_FIELDS=['business_date','machine','machine_code','row','count','time','start','payout','type']
 
 
@@ -94,6 +96,52 @@ def metadata(raw,data):
     return data
 
 
+
+
+def reconcile_one_count(data, history, previous=None):
+    """After a stable recheck, prefer history counts for exactly one BB or RB discrepancy."""
+    data['display_bb'] = data.get('bb')
+    data['display_rb'] = data.get('rb')
+    data['source_history_count_matches'] = bool(data.get('history_count_matches'))
+    data['history_count_reconciled'] = False
+    if data['source_history_count_matches'] or previous is None:
+        return data
+    if previous.get('history_count_matches') is not False:
+        return data
+    for key in ('business_date', 'machine', 'machine_code', 'bb', 'rb',
+                'history_bb_count', 'history_rb_count', 'history_count'):
+        if previous.get(key) != data.get(key):
+            return data
+    if any(error != 'history_count_or_type_mismatch' for error in data.get('errors', [])):
+        return data
+    values = [data.get(key) for key in ('bb', 'rb', 'history_bb_count',
+                                        'history_rb_count', 'history_count')]
+    if not all(type(value) is int and value >= 0 for value in values):
+        return data
+    bb, rb, hbb, hrb, total = values
+    if total != len(history) or total != hbb + hrb:
+        return data
+    # One-event difference in either BB or RB; never mask a two-event discrepancy.
+    if abs(hbb - bb) + abs(hrb - rb) != 1:
+        return data
+    data['bb'] = hbb
+    data['rb'] = hrb
+    data['history_count_matches'] = True
+    data['history_count_reconciled'] = True
+    data['history_count_reconciliation'] = {
+        'policy': 'history_priority_after_stable_recheck_single_event_v1',
+        'original_display_bb': bb, 'original_display_rb': rb,
+        'adopted_history_bb': hbb, 'adopted_history_rb': hrb,
+        'bb_delta': hbb - bb, 'rb_delta': hrb - rb,
+        'previous_snapshot_id': previous.get('snapshot_id'),
+        'warning': 'Original display differs; full source history is retained. No fabricated events.',
+        'probabilities': 'Page-displayed probabilities are original and not recalculated',
+    }
+    data['errors'] = [error for error in data.get('errors', [])
+                      if error != 'history_count_or_type_mismatch']
+    return data
+
+
 def quality(data):
     missing=[]
     for key in BASIC_FIELDS:
@@ -116,6 +164,9 @@ def quality(data):
     data['missing_items']=missing
     data['status']='complete' if not missing else 'partial'
     data['field_sources']={k:('page_display' if data.get(k) is not None else 'unavailable') for k in BASIC_FIELDS}
+    if data.get('history_count_reconciled'):
+        data['field_sources']['bb']='history_count_tolerance_reconciled'
+        data['field_sources']['rb']='history_count_tolerance_reconciled'
     data['field_sources']['signed_difference']=data.get('difference_source','unavailable')
     return data
 
@@ -136,6 +187,7 @@ def one(collector,machine,day,store,reviews,run_id,output,recheck_of=None):
         parsed,history=collector.parse_page(raw,machine,day)
         data.update(parsed)
         metadata(raw,data)
+        reconcile_one_count(data,history,recheck_of)
         data['source_url']=f'https://papimo.jp/h/{collector.HALL_ID}/hit/view/{machine}/{day.replace("-","")}'
         data['page_sha256']=hashlib.sha256(raw).hexdigest()
         data['page_collected_at_jst']=started
@@ -206,7 +258,7 @@ def recheck_history_mismatches(collector,store,day,results,reviews,run_id,output
             'after_snapshot_id':after['snapshot_id'],'selected_snapshot_id':selected['snapshot_id'],
             'before_collected_at_jst':before['collected_at_jst'],'after_collected_at_jst':after['collected_at_jst'],
             'resolved':selected.get('history_count_matches') is True,
-            'reason':'recheck_failed_initial_kept' if fatal else 'matched' if selected.get('history_count_matches') else 'source_summary_history_still_disagree',
+            'reason':'recheck_failed_initial_kept' if fatal else 'history_count_tolerance_reconciled' if selected.get('history_count_reconciled') else 'matched' if selected.get('history_count_matches') else 'source_summary_history_still_disagree',
             'retry_errors':after.get('errors',[])})
         time.sleep(2)
     collector.save_json(output/'history_recheck_audit.json',checks)
