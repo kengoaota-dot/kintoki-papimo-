@@ -28,6 +28,8 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      PAPIMO_AUTOMATIC: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,21 +39,21 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq tesseract-ocr
-          python -m pip install beautifulsoup4==4.14.3 Pillow==12.0.0 numpy==2.3.5
+          python -m pip install beautifulsoup4==4.14.3 Pillow==12.0.0 numpy==2.3.5 openpyxl==3.1.5
       - name: Test definition safeguards
         run: |
           python collect_papimo.py --self-test
-          python -m unittest test_definition -v
+          python -m unittest test_definition test_github_automatic -v
       - name: Restore prior data without resetting history
         env:
           GH_TOKEN: ${{ github.token }}
         run: python restore_state.py
-      - name: Collect candidates and audit definition completion
+      - name: Collect, estimate graphs, append Excel, validate and save
         env:
           PAPIMO_BUSINESS_DATE: ${{ inputs.business_date }}
           PAPIMO_SCOPE: ${{ inputs.scope || 'all' }}
         run: python collect_papimo.py --scope "$PAPIMO_SCOPE"
-      - name: Preserve numeric state, revisions, checkpoints and exception queues
+      - name: Preserve cumulative Excel, numeric state, revisions and exception queues
         if: ${{ always() && hashFiles('state/state_health.json') != '' }}
         uses: actions/upload-artifact@v4
         with:
