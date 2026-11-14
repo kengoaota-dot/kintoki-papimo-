@@ -31,6 +31,19 @@ class DefinitionTests(unittest.TestCase):
             store.put({**d,'bb':2},[row('13:00'),row('12:00')],'run3')
             self.assertEqual(store.db.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0],2)
             self.assertEqual(len(store.history(a)),1)
+            store.put(d,[row('12:00')],'run4')
+            self.assertEqual(store.latest('2026-11-13',305)['bb'],1)
+            store.close()
+
+    def test_history_does_not_cross_machine_or_business_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store=Store(Path(directory)/'state.sqlite3')
+            base={'business_date':'2026-11-13','machine':305,'machine_code':'test','collected_at_jst':'first'}
+            a,_=store.put(base,[row('12:00')],'run1')
+            other=row('12:00');other['machine']=306
+            b,_=store.put({**base,'machine':306},[other],'run1')
+            self.assertNotEqual(a['history_id'],b['history_id'])
+            self.assertEqual(store.history(b)[0]['machine'],306)
             store.close()
 
     def test_pending_graph_and_source_blank_block_completion(self):
