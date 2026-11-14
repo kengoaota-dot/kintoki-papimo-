@@ -9,7 +9,7 @@ import time
 from datetime import datetime,timedelta
 from pathlib import Path
 from collection_store import Store,write_csv
-from graph_features import extract_candidates,apply_review
+from graph_features import extract_candidates,apply_review,GRAPH_METHOD_VERSION
 
 
 BASIC_FIELDS=['bb','rb','total_start','final_start','max_payout','machine_name','machine_code']
@@ -20,6 +20,14 @@ DAILY_FIELDS=['business_date','machine','machine_name','machine_code','bb','rb',
     'updated_at','graph_updated_at_jst','collected_at_jst','source_url','graph_url',
     'history_count','history_count_matches','source_missing_fields','missing_items','status','snapshot_id']
 HISTORY_FIELDS=['business_date','machine','machine_code','row','count','time','start','payout','type']
+
+
+def reusable_graph(old,data,graph_hash):
+    if not old or not data.get('machine_code') or not data.get('updated_at'):return False
+    invariant=['business_date','machine','machine_code','updated_at','bb','rb','total_start','final_start','max_payout']
+    features=old.get('graph_features') or {}
+    version_ok=(features.get('reading_status')=='work_visual_confirmed' or features.get('method')==GRAPH_METHOD_VERSION)
+    return bool(version_ok and old.get('graph_sha256')==graph_hash and all(old.get(k)==data.get(k) for k in invariant))
 
 
 def inventory(collector,store):
@@ -129,8 +137,7 @@ def one(collector,machine,day,store,reviews,run_id,output):
             collector.validate_png(image)
             data['graph_collected_at_jst']=datetime.now(collector.JST).isoformat()
             graph_hash=hashlib.sha256(image).hexdigest()
-            invariant=['machine_code','updated_at','bb','rb','total_start','final_start','max_payout']
-            reusable=old and old.get('graph_sha256')==graph_hash and all(old.get(k)==data.get(k) for k in invariant)
+            reusable=reusable_graph(old,data,graph_hash)
             if reusable and old.get('graph_features'):
                 features=dict(old['graph_features'])
                 data['graph_reuse_reason']='same_day_code_page_update_counters_and_image_sha256'

@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from collection_store import Store,history_change
-from definition_pipeline import quality
-from graph_features import apply_review
+from definition_pipeline import quality,reusable_graph
+from graph_features import apply_review,GRAPH_METHOD_VERSION
 
 
 def row(t,p='10',n='1'):
@@ -12,6 +12,17 @@ def row(t,p='10',n='1'):
 
 
 class DefinitionTests(unittest.TestCase):
+    def test_changed_graph_reader_invalidates_unreviewed_cache(self):
+        data={'business_date':'2026-11-13','machine':305,'machine_code':'test','updated_at':'2026/11/13 23:01',
+              'bb':1,'rb':0,'total_start':100,'final_start':5,'max_payout':100}
+        old={**data,'graph_sha256':'image','graph_features':{'method':'older-reader','reading_status':'candidate_unreviewed'}}
+        self.assertFalse(reusable_graph(old,data,'image'))
+        old['graph_features']['method']=GRAPH_METHOD_VERSION
+        self.assertTrue(reusable_graph(old,data,'image'))
+        self.assertFalse(reusable_graph(old,data,'different_image'))
+        old['graph_features']={'method':'older-reader','reading_status':'work_visual_confirmed'}
+        self.assertTrue(reusable_graph(old,data,'image'))
+
     def test_history_connection_uses_full_series(self):
         old=[row('12:00'),row('11:00')]
         self.assertEqual(history_change(old,[row('13:00')]+old)[0],'append')

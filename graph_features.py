@@ -10,6 +10,8 @@ from datetime import datetime,timedelta
 import numpy as np
 from PIL import Image
 
+GRAPH_METHOD_VERSION = 'PAPIMO480-redcurve-axisOCR-v1.1.0; Work visual confirmation required'
+
 
 def read_tick(image, y):
     # Grid lines are lighter than label text. Keep the complete label at native size.
@@ -89,7 +91,7 @@ def extract_candidates(raw):
             'axis_labels':[{'y':y,'value':v} for y,v in inliers],
             'coins_per_pixel':round(abs(float(slope)),6),
             'graph_updated_at_jst':None, 'graph_update_reason':'not_displayed; do_not_copy_page_update',
-            'method':'PAPIMO480-redcurve-axisOCR-v1; Work visual confirmation required'}
+            'method':GRAPH_METHOD_VERSION}
 
 
 def apply_review(features, review, machine, business_date, machine_code):
