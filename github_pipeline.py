@@ -24,7 +24,7 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
         receipt=build_workbook(store,day,run_id,audit,store.path.parent)
         collector.save_json(store.path.parent/'workbook_receipt.json',receipt)
         collector.save_json(output/'workbook_receipt.json',receipt)
-        audit.update(excel_status='github_workbook_verified',workbook=receipt)
+        audit.update(excel_status='github_workbook_verified',workbook={k:v for k,v in receipt.items() if k!='snapshot_ids'})
     except Exception as exc:
         failures.append({'error':'workbook_export_failed','detail':str(exc)})
         audit['excel_status']='github_export_failed'

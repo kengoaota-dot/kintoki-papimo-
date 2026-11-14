@@ -137,6 +137,7 @@ def one(collector,machine,day,store,reviews,run_id,output):
         data['page_collected_at_jst']=started
         for row in history:row['machine_code']=data['machine_code']
         if data.get('graph_url'):
+            data['graph_url']=collector.urljoin(data['source_url'],data['graph_url'])
             image=collector.fetch(data['graph_url'])
             collector.validate_png(image)
             data['graph_collected_at_jst']=datetime.now(collector.JST).isoformat()

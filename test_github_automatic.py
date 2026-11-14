@@ -26,6 +26,27 @@ def record():
 
 
 class AutomaticTests(unittest.TestCase):
+    def test_relative_graph_url_resolves_before_fetch(self):
+        import collect_papimo
+        from definition_pipeline import one
+        from types import SimpleNamespace
+        from urllib.parse import urljoin
+        calls=[]
+        def fetch(url):
+            calls.append(url)
+            return b'<a href="/ps/123/top">model</a>' if len(calls)==1 else b'image'
+        parsed={**record(),'machine_code':'123','graph_url':'/h/slp/example.png','errors':[]}
+        collector=SimpleNamespace(JST=collect_papimo.JST,HALL_ID=collect_papimo.HALL_ID,
+           fetch=fetch,parse_page=lambda *args:(copy.deepcopy(parsed),[]),urljoin=urljoin,
+           validate_png=lambda raw:None,save_json=collect_papimo.save_json)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);store=Store(root/'state.sqlite3')
+            with patch.dict(os.environ,{'PAPIMO_AUTOMATIC':'1'}),patch('definition_pipeline.extract_candidates',return_value=candidate()):
+                result=one(collector,305,'2026-11-14',store,{},'run',root/'output')
+            self.assertEqual(calls[1],'https://papimo.jp/h/slp/example.png')
+            self.assertEqual(result['reading_status'],'automatic_image_estimate')
+            self.assertEqual(result['errors'],[]);store.close()
+
     def test_automatic_estimate_is_not_visual_confirmation(self):
         f=automatic_estimate(candidate())
         self.assertEqual(f['signed_difference'],100)
