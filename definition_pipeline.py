@@ -217,8 +217,16 @@ def exports(collector,store,day,output,results,run_id,reviews_dir='reviews'):
         'completion_reason':'Work workbook writeback is a separate required phase; never implied by Actions success',
         'run_id':run_id}
     collector.save_json(output/'audit.json',audit)
-    status='COMPLETE' if audit['definition_complete'] else 'PARTIAL: graph review, source gaps, or canonical workbook writeback remain'
-    report=f"Business date: {day}\n\nWork-confirmed signed differences: {signed}/{len(results)}\n\nFully complete machine rows: {complete}/{len(results)}\n\nHistory BB/RB matches: {audit['history_count_matches']}/{len(results)}\n\nSource-side missing fields: {audit['source_missing_fields']}\n\nStatus: {status}\n\nNo graph images are persisted.\n"
+    pending=[]
+    if signed<len(results):pending.append('Work graph confirmation')
+    if audit['source_missing_fields']:pending.append('source-side missing values')
+    uncertain=sum(r.get('sign_judgment')=='uncertain_near_zero' for r in results)
+    if uncertain:pending.append('near-zero sign uncertainty')
+    if not workbook_saved:pending.append('canonical workbook writeback')
+    if any(r.get('errors') for r in results):pending.append('collection errors')
+    if complete<len(results) and not pending:pending.append('required field exceptions')
+    status='COMPLETE' if audit['definition_complete'] else 'PARTIAL: '+', '.join(pending)
+    report=f"Business date: {day}\n\nWork-confirmed signed differences: {signed}/{len(results)}\n\nCanonical Excel status: {audit['excel_status']}\n\nFully complete machine rows: {complete}/{len(results)}\n\nHistory BB/RB matches: {audit['history_count_matches']}/{len(results)}\n\nSource-side missing fields: {audit['source_missing_fields']}\n\nNear-zero signs held open: {uncertain}\n\nStatus: {status}\n\nNo graph images are persisted.\n"
     (output/'validation_report.md').write_text(report,encoding='utf-8')
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as stream:stream.write(report)
