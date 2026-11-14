@@ -24,7 +24,9 @@ HISTORY_FIELDS=['business_date','machine','machine_code','row','count','time','s
 
 def reusable_graph(old,data,graph_hash):
     if not old or not data.get('machine_code') or not data.get('updated_at'):return False
-    invariant=['business_date','machine','machine_code','updated_at','bb','rb','total_start','final_start','max_payout']
+    # PAPIMO's page timestamp advances globally even for historical dates.
+    # Re-read the page metadata, but an exact image hash proves the graph content is unchanged.
+    invariant=['business_date','machine','machine_code','graph_url','bb','rb','total_start','final_start','max_payout']
     features=old.get('graph_features') or {}
     version_ok=(features.get('reading_status')=='work_visual_confirmed' or features.get('method')==GRAPH_METHOD_VERSION)
     return bool(version_ok and old.get('graph_sha256')==graph_hash and all(old.get(k)==data.get(k) for k in invariant))
@@ -140,7 +142,7 @@ def one(collector,machine,day,store,reviews,run_id,output):
             reusable=reusable_graph(old,data,graph_hash)
             if reusable and old.get('graph_features'):
                 features=dict(old['graph_features'])
-                data['graph_reuse_reason']='same_day_code_page_update_counters_and_image_sha256'
+                data['graph_reuse_reason']='same_day_model_URL_counters_and_exact_image_sha256; page_update_checked_separately'
             else:
                 try:features=extract_candidates(image)
                 except Exception as exc:

@@ -19,6 +19,7 @@ class DefinitionTests(unittest.TestCase):
         self.assertFalse(reusable_graph(old,data,'image'))
         old['graph_features']['method']=GRAPH_METHOD_VERSION
         self.assertTrue(reusable_graph(old,data,'image'))
+        self.assertTrue(reusable_graph(old,{**data,'updated_at':'2026/11/14 11:00'},'image'))
         self.assertFalse(reusable_graph(old,data,'different_image'))
         old['graph_features']={'method':'older-reader','reading_status':'work_visual_confirmed'}
         self.assertTrue(reusable_graph(old,data,'image'))
