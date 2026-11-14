@@ -44,7 +44,7 @@ class Store:
         self.db.commit()
 
     def latest(self,day,machine):
-        row=self.db.execute('SELECT payload FROM snapshots WHERE day=? AND machine=? ORDER BY rowid DESC LIMIT 1',(day,machine)).fetchone()
+        row=self.db.execute('SELECT s.payload FROM observations o JOIN snapshots s ON s.id=o.snapshot_id WHERE o.day=? AND o.machine=? ORDER BY o.rowid DESC LIMIT 1',(day,machine)).fetchone()
         return json.loads(row[0]) if row else None
 
     def history(self,record):
@@ -59,11 +59,12 @@ class Store:
         mode, additions=history_change(self.history(old),history)
         if old and old.get('machine_code')!=data.get('machine_code'):
             mode,additions='machine_change_full',history
-        history_id=digest(normalized_history(history))
+        history_id=digest({'day':data['business_date'],'machine':data['machine'],
+            'machine_code':data.get('machine_code'),'rows':normalized_history(history)})
         self.db.execute('INSERT OR IGNORE INTO history_series VALUES(?,?)',(history_id,json.dumps(history,ensure_ascii=False)))
         data['history_id']=history_id
         identity={k:v for k,v in data.items() if k not in ['collected_at_jst','checked_at_jst','page_collected_at_jst',
-            'graph_collected_at_jst','graph_reuse_reason','snapshot_id','history_change','reused','previous_snapshot_id']}
+            'graph_collected_at_jst','graph_reuse_reason','page_sha256','snapshot_id','history_change','reused','previous_snapshot_id']}
         snapshot_id=digest(identity)
         reused=bool(old and old.get('snapshot_id')==snapshot_id)
         data.update(snapshot_id=snapshot_id,history_change=mode,reused=reused,
