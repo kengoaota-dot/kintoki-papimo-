@@ -10,7 +10,7 @@ from datetime import datetime,timedelta
 import numpy as np
 from PIL import Image
 
-GRAPH_METHOD_VERSION = 'PAPIMO480-redcurve-axisOCR-v1.1.0; Work visual confirmation required'
+GRAPH_METHOD_VERSION = 'PAPIMO480-redcurve-axisOCR-v1.2.0; automatic estimates are not visual confirmation'
 
 
 def read_tick(image, y):
@@ -79,10 +79,14 @@ def extract_candidates(raw):
     rounded = lambda value: int(round(value/unit)*unit)
     final = rounded(values[-1])
     sign = 'positive' if values[-1]>error else 'negative' if values[-1]<-error else 'uncertain_near_zero'
+    # Use the full red envelope for extrema: per-column medians can miss sharp vertices.
+    curve_y=np.where(red)[0]
+    envelope_high=float(slope*min(curve_y)+offset)
+    envelope_low=float(slope*max(curve_y)+offset)
     return {'graph_sha256':hashlib.sha256(raw).hexdigest(), 'reading_status':'candidate_unreviewed',
             'difference_source':'image_candidate', 'candidate_signed_difference':final,
-            'candidate_highest':max(0,rounded(max(values))), 'candidate_lowest':min(0,rounded(min(values))),
-            'candidate_max_range':rounded(max(values)-min(values)),
+            'candidate_highest':max(0,rounded(envelope_high)), 'candidate_lowest':min(0,rounded(envelope_low)),
+            'candidate_max_range':rounded(envelope_high-envelope_low),
             'candidate_max_chronological_rise':rounded(max_rise),
             'extrema_order':'high_then_low' if high_index<low_index else 'low_then_high',
             'rounding_unit':unit, 'estimated_error':error, 'sign_candidate':sign,
@@ -92,6 +96,23 @@ def extract_candidates(raw):
             'coins_per_pixel':round(abs(float(slope)),6),
             'graph_updated_at_jst':None, 'graph_update_reason':'not_displayed; do_not_copy_page_update',
             'method':GRAPH_METHOD_VERSION}
+
+
+def automatic_estimate(features):
+    """Accept calibrated machine estimates without ever claiming a human review."""
+    if features.get('reading_status')=='work_visual_confirmed':return dict(features)
+    needed=['candidate_signed_difference','candidate_highest','candidate_lowest','estimated_error','rounding_unit']
+    valid=(features.get('method')==GRAPH_METHOD_VERSION and not features.get('curve_clipped')
+           and len(features.get('graph_sha256',''))==64 and len(features.get('axis_labels',[]))>=3
+           and all(type(features.get(k)) in (int,float) and math.isfinite(features[k]) for k in needed))
+    if not valid:return {**features,'automatic_check':'rejected; missing calibration, incompatible method, or clipped curve'}
+    final,high,low=(features[k] for k in needed[:3])
+    if not low<=final<=high or not low<=0<=high or features['estimated_error']<=0:
+        return {**features,'automatic_check':'rejected; inconsistent numeric range'}
+    return {**features,'signed_difference':final,'highest_difference':high,'lowest_difference':low,
+            'max_range':high-low,'sign_judgment':features.get('sign_candidate','uncertain_near_zero'),
+            'reading_status':'automatic_image_estimate','difference_source':'image_estimate_automatic',
+            'automatic_check':'calibrated_axis_and_curve_verified','visual_confirmation':False}
 
 
 def apply_review(features, review, machine, business_date, machine_code):

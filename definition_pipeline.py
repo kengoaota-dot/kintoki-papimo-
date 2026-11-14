@@ -9,7 +9,7 @@ import time
 from datetime import datetime,timedelta
 from pathlib import Path
 from collection_store import Store,write_csv
-from graph_features import extract_candidates,apply_review,GRAPH_METHOD_VERSION
+from graph_features import extract_candidates,apply_review,automatic_estimate,GRAPH_METHOD_VERSION
 
 
 BASIC_FIELDS=['bb','rb','total_start','final_start','max_payout','machine_name','machine_code']
@@ -102,7 +102,9 @@ def quality(data):
         missing.append({'item':'history','reason':'BB_RB_or_type_count_mismatch'})
     for field in data.get('source_missing_fields',[]):
         missing.append({'item':'history.'+field['field'],'row':field['row'],'reason':'source_blank'})
-    if data.get('reading_status')!='work_visual_confirmed':
+    accepted=(data.get('reading_status')=='work_visual_confirmed' or
+              (data.get('collection_mode')=='github_automatic' and data.get('reading_status')=='automatic_image_estimate'))
+    if not accepted:
         missing.append({'item':'signed_difference','reason':'Work_visual_confirmation_pending'})
     if data.get('sign_judgment')=='uncertain_near_zero':
         missing.append({'item':'difference_sign','reason':'uncertain_near_zero_within_error'})
@@ -153,7 +155,12 @@ def one(collector,machine,day,store,reviews,run_id,output):
             review=reviews.get(str(machine))
             if review:
                 try:features=apply_review(features,review,machine,day,data['machine_code'])
-                except ValueError as exc:data['errors'].append(str(exc))
+                except ValueError as exc:
+                    if os.getenv('PAPIMO_AUTOMATIC')=='1':data['review_note']='stale review ignored: '+str(exc)
+                    else:data['errors'].append(str(exc))
+            if os.getenv('PAPIMO_AUTOMATIC')=='1':
+                features=automatic_estimate(features)
+                data['collection_mode']='github_automatic'
             data.update(features)
             data['graph_features']=features
             data['graph_status']='downloaded_and_verified_transient'
@@ -228,6 +235,9 @@ def exports(collector,store,day,output,results,run_id,reviews_dir='reviews'):
     status='COMPLETE' if audit['definition_complete'] else 'PARTIAL: '+', '.join(pending)
     report=f"Business date: {day}\n\nWork-confirmed signed differences: {signed}/{len(results)}\n\nCanonical Excel status: {audit['excel_status']}\n\nFully complete machine rows: {complete}/{len(results)}\n\nHistory BB/RB matches: {audit['history_count_matches']}/{len(results)}\n\nSource-side missing fields: {audit['source_missing_fields']}\n\nNear-zero signs held open: {uncertain}\n\nStatus: {status}\n\nNo graph images are persisted.\n"
     (output/'validation_report.md').write_text(report,encoding='utf-8')
+    if os.getenv('PAPIMO_AUTOMATIC')=='1':
+        from github_pipeline import finalize_export
+        return finalize_export(collector,store,day,output,results,run_id,audit)
     if os.getenv('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'],'a',encoding='utf-8') as stream:stream.write(report)
     return audit
@@ -313,4 +323,4 @@ def run(collector):
     store.close()
     print(json.dumps(audit,ensure_ascii=False),flush=True)
     # Nonzero is intentional: candidates or source gaps must never look like complete collection.
-    return 0 if audit['definition_complete'] else 2
+    return 0 if audit.get('automation_complete',audit['definition_complete']) else 2
