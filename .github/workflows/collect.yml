@@ -12,7 +12,7 @@ on:
         required: true
         type: choice
         default: all
-        options: [test, all]
+        options: [test, all, saved]
   schedule:
     - cron: '10 14 * * *' # 23:10 Asia/Tokyo
 
