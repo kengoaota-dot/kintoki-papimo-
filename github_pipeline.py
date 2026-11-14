@@ -15,7 +15,10 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
         for key in ['bb','rb','total_start','final_start','max_payout','machine_name','machine_code']:
             if r.get(key) is None:failures.append({'machine':r['machine'],'error':'required_basic_missing:'+key})
     if not results:failures.append({'error':'no_machines'})
+    # Kept for compatibility with old consumers; accepted automatic estimates need no Work queue.
+    collector.save_json(output/'work_review_queue.json',[])
     audit={**legacy_audit,'mode':'github_automatic_v2',
+       'graph_candidates':sum(r.get('reading_status') in accepted for r in results),
        'automatically_read':sum(r.get('reading_status')=='automatic_image_estimate' for r in results),
        'uncertain_signs':sum(r.get('sign_judgment')=='uncertain_near_zero' for r in results),
        'data_complete':all(r.get('status')=='complete' for r in results) and bool(results),

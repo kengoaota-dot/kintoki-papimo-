@@ -105,7 +105,8 @@ def quality(data):
     accepted=(data.get('reading_status')=='work_visual_confirmed' or
               (data.get('collection_mode')=='github_automatic' and data.get('reading_status')=='automatic_image_estimate'))
     if not accepted:
-        missing.append({'item':'signed_difference','reason':'Work_visual_confirmation_pending'})
+        missing.append({'item':'signed_difference','reason':
+            'automatic_graph_validation_pending' if data.get('collection_mode')=='github_automatic' else 'Work_visual_confirmation_pending'})
     if data.get('sign_judgment')=='uncertain_near_zero':
         missing.append({'item':'difference_sign','reason':'uncertain_near_zero_within_error'})
     if data.get('curve_clipped'):
@@ -306,6 +307,7 @@ def run(collector):
                 old=store.latest(past,machine)
                 if old and old.get('status')=='complete':continue
                 reason=('outside_daily_graph_public_window' if age>13 else
+                    'saved_exceptions; see_record_missing_items' if old and old.get('graph_sha256') and os.getenv('PAPIMO_AUTOMATIC')=='1' else
                     'Work_visual_confirmation_pending' if old and old.get('graph_sha256') else 'not_collected')
                 backfill_queue.append({'business_date':past,'machine':machine,'reason':reason,
                     'history_expected_public':age<=3,'graph_expected_public':age<=13})
@@ -313,7 +315,8 @@ def run(collector):
                     backfill_queue[-1]['reason']='canonical_index_check_required; not_known_to_be_globally_missing'
                 if reason=='not_collected' and (past,machine) in confirmed_missing and backfill_done<max(0,args.backfill_limit):
                     saved=one(collector,machine,past,store,read_reviews(args.reviews_dir,past),run_id,output/'backfill'/past)
-                    backfill_queue[-1]['reason']='Work_visual_confirmation_pending' if saved.get('graph_sha256') else 'collection_failed'
+                    backfill_queue[-1]['reason']=('saved_automatic_result; see_record_missing_items' if os.getenv('PAPIMO_AUTOMATIC')=='1' and saved.get('graph_sha256') else
+                        'Work_visual_confirmation_pending' if saved.get('graph_sha256') else 'collection_failed')
                     backfill_queue[-1]['resume_items']=saved['missing_items']
                     backfill_done+=1
                     time.sleep(2)
