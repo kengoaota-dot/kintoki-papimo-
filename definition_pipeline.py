@@ -165,7 +165,7 @@ def one(collector,machine,day,store,reviews,run_id,output):
     return saved
 
 
-def exports(collector,store,day,output,results,run_id):
+def exports(collector,store,day,output,results,run_id,reviews_dir='reviews'):
     write_csv(output/'daily_machines.csv',results,DAILY_FIELDS)
     features=[{k:r.get(k) for k in DAILY_FIELDS if k not in ['bb','rb','total_start','final_start','max_payout']} for r in results]
     write_csv(output/'graph_features.csv',features,list(features[0]) if features else [])
@@ -192,7 +192,7 @@ def exports(collector,store,day,output,results,run_id):
         'note':'Numeric export input for the Work workbook adapter; does not overwrite the Library canonical workbook.'})
     signed=sum(r.get('reading_status')=='work_visual_confirmed' for r in results)
     complete=sum(r['status']=='complete' for r in results)
-    receipt_path=Path('reviews')/'receipts'/(day+'.json')
+    receipt_path=Path(reviews_dir)/'receipts'/(day+'.json')
     receipt=json.loads(receipt_path.read_text(encoding='utf-8')) if receipt_path.exists() else {}
     workbook_saved=(receipt.get('business_date')==day and receipt.get('writeback_verified') is True
         and receipt.get('snapshot_ids')==sorted(r['snapshot_id'] for r in results)
@@ -277,13 +277,15 @@ def run(collector):
                 backfill_queue.append({'business_date':past,'machine':machine,'reason':reason,
                     'history_expected_public':age<=3,'graph_expected_public':age<=13})
                 if reason=='not_collected' and backfill_done<max(0,args.backfill_limit):
-                    one(collector,machine,past,store,read_reviews(args.reviews_dir,past),run_id,output/'backfill'/past)
+                    saved=one(collector,machine,past,store,read_reviews(args.reviews_dir,past),run_id,output/'backfill'/past)
+                    backfill_queue[-1]['reason']='Work_visual_confirmation_pending' if saved.get('graph_sha256') else 'collection_failed'
+                    backfill_queue[-1]['resume_items']=saved['missing_items']
                     backfill_done+=1
                     time.sleep(2)
     collector.save_json(output/'backfill_queue.json',backfill_queue)
     collector.save_json(output/'backfill_audit.json',{'processed_machine_days':backfill_done,
         'pending_machine_days':len(backfill_queue),'not_in_daily_completion_denominator':True})
-    audit=exports(collector,store,day,output,results,run_id)
+    audit=exports(collector,store,day,output,results,run_id,args.reviews_dir)
     store.close()
     print(json.dumps(audit,ensure_ascii=False),flush=True)
     # Nonzero is intentional: candidates or source gaps must never look like complete collection.

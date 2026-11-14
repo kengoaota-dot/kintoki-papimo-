@@ -6,6 +6,7 @@ import itertools
 import math
 import re
 import subprocess
+from datetime import datetime,timedelta
 import numpy as np
 from PIL import Image
 
@@ -54,8 +55,10 @@ def extract_candidates(raw):
     if not 10 <= zero_y <= 449:
         raise ValueError('zero_line_outside_plot')
     red = (pixels[:,:,0]>165) & (pixels[:,:,1]<110) & (pixels[:,:,2]<140)
-    red[:10,:] = False
-    red[450:,:] = False
+    # PAPIMO curves can extend below the last grid line (e.g. y=452).
+    # The grid boundary is not the image boundary and must not crop true extrema.
+    red[:1,:] = False
+    red[height-1:,:] = False
     red[:,:20] = False
     red[:,445:] = False
     points = [(x,float(np.median(np.where(red[:,x])[0]))) for x in range(20,445) if red[:,x].any()]
@@ -81,7 +84,7 @@ def extract_candidates(raw):
             'candidate_max_chronological_rise':rounded(max_rise),
             'extrema_order':'high_then_low' if high_index<low_index else 'low_then_high',
             'rounding_unit':unit, 'estimated_error':error, 'sign_candidate':sign,
-            'curve_clipped':bool(min(y for _,y in points)<=17 or max(y for _,y in points)>=447),
+            'curve_clipped':bool(min(y for _,y in points)<=2 or max(y for _,y in points)>=height-2),
             'zero_line_y':round(float(zero_y),2), 'last_point':[points[-1][0],round(points[-1][1],2)],
             'axis_labels':[{'y':y,'value':v} for y,v in inliers],
             'coins_per_pixel':round(abs(float(slope)),6),
@@ -102,8 +105,15 @@ def apply_review(features, review, machine, business_date, machine_code):
     if not all(review[k] is True for k in ['zero_line_confirmed','axis_confirmed','right_endpoint_confirmed','extrema_confirmed']):
         raise ValueError('review_not_confirmed')
     final, high, low = (review[k] for k in ['signed_difference','highest_difference','lowest_difference'])
-    if not all(isinstance(v,(int,float)) and math.isfinite(v) for v in [final,high,low]):
+    if not all(type(v) in (int,float) and math.isfinite(v) for v in [final,high,low]):
         raise ValueError('review_non_numeric_values')
+    if not isinstance(review['reviewer'],str) or not review['reviewer'].strip():
+        raise ValueError('reviewer_missing')
+    try:
+        checked=datetime.fromisoformat(review['reviewed_at_jst'])
+        if checked.utcoffset()!=timedelta(hours=9):raise ValueError('JST required')
+    except (ValueError,TypeError):
+        raise ValueError('review_timestamp_not_JST')
     if not low <= final <= high or low > 0 or high < 0 or review['estimated_error'] <= 0:
         raise ValueError('review_inconsistent_range_or_error')
     if review['sign_judgment'] not in ['positive','negative','uncertain_near_zero']:

@@ -9,6 +9,7 @@ const args=process.argv.slice(2);
 const flag=(name)=>args.includes(name)?args[args.indexOf(name)+1]:null;
 const inputPath=flag('--input'), outputPath=flag('--output'), template=flag('--template');
 if(!inputPath || !outputPath)throw new Error('--input excel_input.json --output absolute.xlsx required');
+if(template && !flag('--map'))throw new Error('Existing canonical workbook requires an explicit column map; refusing duplicate English columns');
 const data=JSON.parse(await fs.readFile(inputPath,'utf8'));
 const maps=flag('--map')?JSON.parse(await fs.readFile(flag('--map'),'utf8')):{};
 const wb=template?await SpreadsheetFile.importXlsx(await FileBlob.load(template)):Workbook.create();
