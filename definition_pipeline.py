@@ -225,6 +225,7 @@ def run(collector):
     parser.add_argument('--reviews-dir',default='reviews')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--backfill-limit',type=int,default=10)
+    parser.add_argument('--backfill-plan',default='backfill_plan.json')
     parser.add_argument('--self-test',action='store_true')
     args=parser.parse_args()
     if args.self_test:
@@ -263,6 +264,10 @@ def run(collector):
         time.sleep(2)
     backfill_queue=[]
     backfill_done=0
+    plan_path=Path(args.backfill_plan)
+    plan=json.loads(plan_path.read_text(encoding='utf-8')) if plan_path.exists() else []
+    confirmed_missing={(entry['business_date'],int(entry['machine'])) for entry in plan
+        if entry.get('confirmed_missing') is True and entry.get('canonical_index_checked_at_jst')}
     if args.scope=='all':
         first=datetime.strptime('2026-11-03','%Y-%m-%d').date()
         current=datetime.strptime(day,'%Y-%m-%d').date()
@@ -276,7 +281,9 @@ def run(collector):
                     'Work_visual_confirmation_pending' if old and old.get('graph_sha256') else 'not_collected')
                 backfill_queue.append({'business_date':past,'machine':machine,'reason':reason,
                     'history_expected_public':age<=3,'graph_expected_public':age<=13})
-                if reason=='not_collected' and backfill_done<max(0,args.backfill_limit):
+                if reason=='not_collected' and (past,machine) not in confirmed_missing:
+                    backfill_queue[-1]['reason']='canonical_index_check_required; not_known_to_be_globally_missing'
+                if reason=='not_collected' and (past,machine) in confirmed_missing and backfill_done<max(0,args.backfill_limit):
                     saved=one(collector,machine,past,store,read_reviews(args.reviews_dir,past),run_id,output/'backfill'/past)
                     backfill_queue[-1]['reason']='Work_visual_confirmation_pending' if saved.get('graph_sha256') else 'collection_failed'
                     backfill_queue[-1]['resume_items']=saved['missing_items']

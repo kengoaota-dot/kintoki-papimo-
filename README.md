@@ -50,7 +50,9 @@ exception_queue.json、work_review_queue.json、checkpoint.json、audit.json、e
 CSVの正の差枚には＋符号を付け、Excelでは数値型と表示書式で扱います。
 ページ更新時刻をグラフ更新時刻へ転記しません。グラフ更新時刻が不明なら不明理由を残します。
 
-過去補完は2026-11-03以降の不足のみ。現在日の巡回後、既定では最大10台日を補完します。
+過去補完は2026-11-03以降の不足のみ。Workで既存正本・軽量索引を確認したbackfill_plan.jsonがある場合に限り、現在日の巡回後、最大10台日を補完します。
+各計画行のbusiness_date、machine、confirmed_missing=true、canonical_index_checked_at_jstを確認します。
+GitHub原簿に行がないことだけでは既存Libraryでも未取得とはみなさず、計画がなければ重複した過去取得は行いません。
 公開期間の目安（当日グラフ13日・履歴3日）を別々に記録し、範囲外を取得済みにしません。
 backfill_queue.jsonとbackfill_audit.jsonで日次の分母と分けて報告します。
 
