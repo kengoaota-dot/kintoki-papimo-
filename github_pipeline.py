@@ -9,6 +9,17 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
     accepted={'work_visual_confirmed','automatic_image_estimate'}
     failures=[]
     source_history_mismatches=[]
+    field_audit=[{'business_date':day,'machine':r['machine'],'snapshot_id':r['snapshot_id'],
+        'collected_at_jst':r['collected_at_jst'],**f} for r in results for f in r.get('history_field_audit',[])]
+    from collections import Counter
+    from collection_store import write_csv
+    write_csv(output/'history_field_audit.csv',field_audit,
+        ['business_date','machine','snapshot_id','collected_at_jst','row','time','field','classification','raw_text','raw_cell_html'])
+    collector.save_json(output/'source_missing_summary.json',{
+        'by_field':dict(Counter(f['field'] for f in field_audit if f['classification']=='source_blank')),
+        'by_machine':dict(Counter(str(f['machine']) for f in field_audit if f['classification']=='source_blank')),
+        'unparsed_nonblank':sum(f['classification']=='unparsed_nonblank' for f in field_audit),
+        'detail_file':'history_field_audit.csv','no_imputed_values':True})
     for r in results:
         # BB/RB can advance before the site's history row is published (e.g. an active bonus).
         # Preserve both source values and the mismatch; never fabricate the absent row.
@@ -60,3 +71,4 @@ def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
     if audit['source_missing_fields'] or audit['uncertain_signs'] or source_history_mismatches:
         print('::warning::Source blanks, summary/history discrepancies or near-zero signs remain in the saved exception queue; automation success does not mean complete source data.')
     return audit
+

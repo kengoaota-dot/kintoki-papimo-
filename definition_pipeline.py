@@ -120,7 +120,7 @@ def quality(data):
     return data
 
 
-def one(collector,machine,day,store,reviews,run_id,output):
+def one(collector,machine,day,store,reviews,run_id,output,recheck_of=None):
     started=datetime.now(collector.JST).isoformat()
     data={'hall_id':collector.HALL_ID,'machine':machine,'business_date':day,
           'collected_at_jst':started,'errors':[],'source_missing_fields':[],
@@ -128,6 +128,9 @@ def one(collector,machine,day,store,reviews,run_id,output):
     history=[]
     data['source_url']=f'https://papimo.jp/h/{collector.HALL_ID}/hit/view/{machine}/{day.replace("-","")}'
     old=store.latest(day,machine)
+    if recheck_of:
+        data['history_recheck_of']=recheck_of['snapshot_id']
+        data['history_recheck_attempt']=1
     try:
         raw=collector.fetch(data['source_url'])
         parsed,history=collector.parse_page(raw,machine,day)
@@ -181,6 +184,33 @@ def one(collector,machine,day,store,reviews,run_id,output):
           'difference_read':saved.get('reading_status'),'source_missing':len(saved.get('source_missing_fields',[])),
           'errors':saved['errors']},ensure_ascii=False),flush=True)
     return saved
+
+
+def recheck_history_mismatches(collector,store,day,results,reviews,run_id,output):
+    """One end-of-run check per discrepant machine, preserving both observations."""
+    revised=list(results);checks=[]
+    for ix,before in enumerate(results):
+        if before.get('history_count_matches') is not False:continue
+        if any(e!='history_count_or_type_mismatch' for e in before.get('errors',[])):continue
+        after=one(collector,before['machine'],day,store,reviews,run_id+'-history-recheck',
+                  output/'history_rechecks',recheck_of=before)
+        fatal=[e for e in after.get('errors',[]) if e!='history_count_or_type_mismatch']
+        selected=after if not fatal and after.get('machine_code')==before.get('machine_code') else before
+        if selected is before:
+            # Failed retry is retained, but must not replace a usable initial observation.
+            store.db.execute('INSERT OR REPLACE INTO observations VALUES(?,?,?,?,?,?)',
+                (run_id+'-history-selected',day,before['machine'],before['snapshot_id'],
+                 after['collected_at_jst'],1));store.db.commit()
+        revised[ix]=selected
+        checks.append({'machine':before['machine'],'attempts':1,'before_snapshot_id':before['snapshot_id'],
+            'after_snapshot_id':after['snapshot_id'],'selected_snapshot_id':selected['snapshot_id'],
+            'before_collected_at_jst':before['collected_at_jst'],'after_collected_at_jst':after['collected_at_jst'],
+            'resolved':selected.get('history_count_matches') is True,
+            'reason':'recheck_failed_initial_kept' if fatal else 'matched' if selected.get('history_count_matches') else 'source_summary_history_still_disagree',
+            'retry_errors':after.get('errors',[])})
+        time.sleep(2)
+    collector.save_json(output/'history_recheck_audit.json',checks)
+    return revised
 
 
 def exports(collector,store,day,output,results,run_id,reviews_dir='reviews'):
@@ -302,6 +332,11 @@ def run(collector):
                 'remaining':[m for m in machines if m not in [r['machine'] for r in results]],
                 'exceptions':[{'machine':r['machine'],'items':r['missing_items']} for r in results if r['missing_items']]})
         time.sleep(2)
+    results=recheck_history_mismatches(collector,store,day,results,reviews,run_id,output)
+    collector.save_json(output/'checkpoint.json',{'day':day,'run_id':run_id,
+        'processed':[r['machine'] for r in results],'remaining':[],
+        'exceptions':[{'machine':r['machine'],'snapshot_id':r['snapshot_id'],'items':r['missing_items']}
+                      for r in results if r['missing_items']], 'history_recheck_completed':True})
     backfill_queue=[]
     backfill_done=0
     plan_path=Path(args.backfill_plan)
@@ -339,3 +374,4 @@ def run(collector):
     print(json.dumps(audit,ensure_ascii=False),flush=True)
     # Nonzero is intentional: candidates or source gaps must never look like complete collection.
     return 0 if audit.get('automation_complete',audit['definition_complete']) else 2
+

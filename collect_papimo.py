@@ -8,6 +8,7 @@ import os
 import re
 import time
 import urllib.request
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin
@@ -35,7 +36,7 @@ def fetch(url):
 
 
 def number(value):
-    value = value.replace(",", "").strip()
+    value = re.sub(r"\s", "", unicodedata.normalize('NFKC', value)).replace(",", "")
     return int(value) if re.fullmatch(r"[0-9]+", value) else None
 
 
@@ -87,8 +88,17 @@ def parse_page(raw, machine, business_date):
             if len(cells) != 5:
                 errors.append("malformed_history_row")
                 continue
-            values = [c.get_text(strip=True) for c in cells]
+            values = [unicodedata.normalize('NFKC', c.get_text(strip=True)).strip() for c in cells]
             history.append(dict(zip(FIELDS, [business_date, machine, len(history) + 1] + values)))
+            for pos, key in [(2, 'start'), (3, 'payout')]:
+                if number(values[pos]) is None:
+                    is_blank = values[pos] in ('', '-', '—', '―', '−', 'ー')
+                    evidence = {'row':len(history),'time':values[1],'field':key,
+                        'classification':'source_blank' if is_blank else 'unparsed_nonblank',
+                        'raw_text':values[pos], 'raw_cell_html':str(cells[pos])}
+                    data.setdefault('history_field_audit', []).append(evidence)
+                    if is_blank:data['source_missing_fields'].append(evidence)
+                    else:errors.append('unparsed_history_value:'+key)
     data["history_count"] = len(history)
     data["history_bb_count"] = sum(r["type"].upper() in ("BIG", "BB") for r in history)
     data["history_rb_count"] = sum(r["type"].upper() in ("REG", "RB") for r in history)
@@ -98,13 +108,9 @@ def parse_page(raw, machine, business_date):
     if not data["history_count_matches"]:
         errors.append("history_count_or_type_mismatch")
     for row in history:
-        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", row["time"]) or any(number(row[k]) is None and row[k] not in ("", "-", "—") for k in ("start", "payout")):
+        if not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", row["time"]) or any(number(row[k]) is None and row[k] not in ("", "-", "—", "―", "−", "ー") for k in ("start", "payout")):
             errors.append("invalid_history_values")
             break
-    for row in history:
-        for key in ("start", "payout"):
-            if number(row[key]) is None:
-                data["source_missing_fields"].append({"row": row["row"], "time": row["time"], "field": key})
     # 'More' only reveals rows already in this HTML; no AJAX pages are discarded.
     data["history_complete"] = data["history_count_matches"] and not any("history" in e for e in errors)
     graph = soup.select_one("#tab-graph-today img")
@@ -157,4 +163,5 @@ if __name__ == "__main__":
     import sys
     from definition_pipeline import run
     raise SystemExit(run(sys.modules[__name__]))
+
 

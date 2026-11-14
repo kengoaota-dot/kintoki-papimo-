@@ -26,6 +26,66 @@ def record():
 
 
 class AutomaticTests(unittest.TestCase):
+    def test_recheck_only_mismatches_once_and_keeps_original(self):
+        import collect_papimo
+        from definition_pipeline import recheck_history_mismatches
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);store=Store(root/'state.sqlite3');out=root/'out';out.mkdir()
+            first,_=store.put(quality({**record(),'history_count_matches':False,
+                'errors':['history_count_or_type_mismatch']}),[{'type':'BIG'}],'initial')
+            good={**first,'machine':306,'history_count_matches':True,'errors':[]}
+            def retry(*args,**kwargs):
+                self.assertEqual(args[1],305);self.assertEqual(kwargs['recheck_of']['snapshot_id'],first['snapshot_id'])
+                return store.put(quality({**record(),'collected_at_jst':'2026-11-15T00:10:00+09:00'}),
+                    [{'type':'BIG'}],args[5])[0]
+            with patch('definition_pipeline.one',side_effect=retry) as one,patch('definition_pipeline.time.sleep'):
+                result=recheck_history_mismatches(collect_papimo,store,'2026-11-14',[first,good],{},'run',out)
+            self.assertEqual(one.call_count,1);self.assertTrue(result[0]['history_count_matches'])
+            self.assertEqual(store.db.execute('SELECT COUNT(*) FROM snapshots WHERE id=?',(first['snapshot_id'],)).fetchone()[0],1)
+            self.assertEqual(store.history(first),[{'type':'BIG'}]);store.close()
+
+    def test_persistent_mismatch_has_no_synthetic_history_or_retry_loop(self):
+        import collect_papimo,json
+        from definition_pipeline import recheck_history_mismatches
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);store=Store(root/'state.sqlite3');out=root/'out';out.mkdir()
+            first,_=store.put(quality({**record(),'bb':2,'history_count_matches':False,
+                'errors':['history_count_or_type_mismatch']}),[{'type':'BIG'}],'initial')
+            with patch('definition_pipeline.one',return_value=first) as one,patch('definition_pipeline.time.sleep'):
+                result=recheck_history_mismatches(collect_papimo,store,'2026-11-14',[first],{},'run',out)
+            self.assertEqual(one.call_count,1);self.assertFalse(result[0]['history_count_matches'])
+            self.assertEqual(len(store.history(result[0])),1)
+            self.assertEqual(json.loads((out/'history_recheck_audit.json').read_text())[0]['reason'],'source_summary_history_still_disagree');store.close()
+
+    def test_failed_recheck_retains_usable_initial_pointer(self):
+        import collect_papimo
+        from definition_pipeline import recheck_history_mismatches
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);store=Store(root/'state.sqlite3');out=root/'out';out.mkdir()
+            first,_=store.put(quality({**record(),'history_count_matches':False,
+                'errors':['history_count_or_type_mismatch']}),[{'type':'BIG'}],'initial')
+            def retry(*args,**kwargs):
+                return store.put(quality({**record(),'errors':['TimeoutError'],
+                    'collected_at_jst':'2026-11-15T00:10:00+09:00'}),[],args[5])[0]
+            with patch('definition_pipeline.one',side_effect=retry),patch('definition_pipeline.time.sleep'):
+                result=recheck_history_mismatches(collect_papimo,store,'2026-11-14',[first],{},'run',out)
+            self.assertEqual(result[0]['snapshot_id'],first['snapshot_id'])
+            self.assertEqual(store.latest('2026-11-14',305)['snapshot_id'],first['snapshot_id'])
+            self.assertEqual(store.db.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0],2);store.close()
+
+    def test_history_numeric_normalization_and_source_blank_evidence(self):
+        import collect_papimo
+        html='<div id="tab-history-index"><table class="history"><tbody><tr><td>1</td><td>12:00</td><td>１，２００</td><td><span></span></td><td>BIG</td></tr></tbody></table></div>'
+        data,rows=collect_papimo.parse_page(html,305,'2026-11-14')
+        self.assertEqual(collect_papimo.number(rows[0]['start']),1200)
+        self.assertEqual(len(data['source_missing_fields']),1)
+        self.assertEqual(data['source_missing_fields'][0]['classification'],'source_blank')
+        self.assertIn('<span>',data['source_missing_fields'][0]['raw_cell_html'])
+        bad,_=collect_papimo.parse_page(html.replace('<span></span>','not-a-number'),305,'2026-11-14')
+        self.assertEqual(bad['source_missing_fields'],[])
+        self.assertEqual(bad['history_field_audit'][0]['classification'],'unparsed_nonblank')
+        self.assertIn('unparsed_history_value:payout',bad['errors'])
+
     def test_relative_graph_url_resolves_before_fetch(self):
         import collect_papimo
         from definition_pipeline import one
@@ -117,3 +177,4 @@ class AutomaticTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
