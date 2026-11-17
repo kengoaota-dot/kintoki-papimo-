@@ -206,5 +206,40 @@ class AutomaticTests(unittest.TestCase):
             self.assertIn('history_count_or_type_mismatch',r['errors']);store.close()
 
 
+
+class TransportSafetyTests(unittest.TestCase):
+    def test_http_500_then_success(self):
+        import collect_papimo as p
+        from urllib.error import HTTPError
+        from unittest.mock import MagicMock
+        response=MagicMock()
+        response.__enter__.return_value.read.return_value=b'ok'
+        with patch.object(p,'FETCH_DEADLINE',None),patch.object(p.urllib.request,'urlopen',side_effect=[HTTPError('https://example.invalid',500,'test',{},None),response]) as call,patch.object(p.time,'sleep') as sleep:
+            self.assertEqual(p.fetch('https://example.invalid'),b'ok')
+            self.assertEqual(call.call_count,2)
+            sleep.assert_called_once_with(30)
+
+    def test_budget_prevents_request(self):
+        import collect_papimo as p
+        with patch.object(p,'FETCH_DEADLINE',0),patch.object(p.urllib.request,'urlopen') as call:
+            with self.assertRaises(p.CollectionBudgetExceeded):
+                p.fetch('https://example.invalid')
+            call.assert_not_called()
+
+    def test_failed_attempt_keeps_complete_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store=Store(Path(directory)/'state.sqlite3')
+            try:
+                first,_=store.put(quality(record()),[{'type':'BIG'}],'first')
+                self.assertEqual(first['status'],'complete')
+                failed,_=store.put(quality({**record(),'errors':['HTTPError: 500'],'bb':None}),[],'failed')
+                self.assertEqual(store.latest(first['business_date'],first['machine'])['snapshot_id'],first['snapshot_id'])
+                self.assertNotEqual(first['snapshot_id'],failed['snapshot_id'])
+                self.assertEqual(store.db.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0],2)
+                self.assertEqual(store.db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+            finally:
+                store.close()
+
+
 if __name__=='__main__':unittest.main()
 
