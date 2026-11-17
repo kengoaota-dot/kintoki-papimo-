@@ -63,6 +63,7 @@ def _inventory_live(collector,store):
             if m in machines:raise ValueError('duplicate_machine_in_inventory')
             machines[m]=model['name']
         time.sleep(.2)
+    if sorted(machines)!=sorted(collector.ALL_MACHINES):raise ValueError('inventory_target_mismatch')
     record={'signature':signature,'models':models,'machines':sorted(machines),'checked_at_jst':datetime.now(collector.JST).isoformat()}
     store.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',('machine_inventory',json.dumps(record,ensure_ascii=False)))
     store.db.commit()
@@ -259,6 +260,21 @@ def one(collector,machine,day,store,reviews,run_id,output,recheck_of=None):
     return saved
 
 
+def retry_transport_failures(collector,store,day,results,reviews,run_id,output):
+    revised=list(results)
+    checks=[]
+    for ix,before in enumerate(results):
+        if not any(e.startswith(('HTTPError:', 'URLError:', 'TimeoutError:', 'ConnectionError:', 'ConnectionResetError:')) for e in before.get('errors',[])):
+            continue
+        time.sleep(2)
+        after=one(collector,before['machine'],day,store,reviews,run_id+'-transport-retry',output/'transport_retries')
+        revised[ix]=after
+        checks.append({'machine':before['machine'],'before_snapshot_id':before['snapshot_id'],
+            'after_snapshot_id':after['snapshot_id'],'errors':after.get('errors',[])})
+    collector.save_json(output/'transport_retry_audit.json',checks)
+    return revised
+
+
 def recheck_history_mismatches(collector,store,day,results,reviews,run_id,output):
     """One end-of-run check per discrepant machine, preserving both observations."""
     revised=list(results);checks=[]
@@ -407,6 +423,7 @@ def run(collector):
                 'remaining':[m for m in machines if m not in [r['machine'] for r in results]],
                 'exceptions':[{'machine':r['machine'],'items':r['missing_items']} for r in results if r['missing_items']]})
         time.sleep(2)
+    results=retry_transport_failures(collector,store,day,results,reviews,run_id,output)
     results=recheck_history_mismatches(collector,store,day,results,reviews,run_id,output)
     collector.save_json(output/'checkpoint.json',{'day':day,'run_id':run_id,
         'processed':[r['machine'] for r in results],'remaining':[],
