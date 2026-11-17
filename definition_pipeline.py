@@ -407,6 +407,7 @@ def run(collector):
         store.close()
         print(json.dumps(audit,ensure_ascii=False),flush=True)
         return 0 if audit['automation_complete'] else 2
+    collector.FETCH_DEADLINE=time.monotonic()+30*60
     machines=collector.TEST_MACHINES if args.scope=='test' else inventory(collector,store)
     fallback=getattr(collector,'inventory_fallback',None)
     if fallback:collector.save_json(output/'inventory_fallback.json',fallback)
