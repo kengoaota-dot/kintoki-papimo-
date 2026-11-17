@@ -23,11 +23,20 @@ JST = timezone(timedelta(hours=9))
 FIELDS = ["business_date", "machine", "row", "count", "time", "start", "payout", "type"]
 
 
+class CollectionBudgetExceeded(TimeoutError):
+    pass
+
+
+FETCH_DEADLINE = None
+
+
 def fetch(url):
     from urllib.error import HTTPError, URLError
     from email.utils import parsedate_to_datetime
     delays = (30, 60, 120)
     for attempt in range(4):
+        if FETCH_DEADLINE is not None and time.monotonic() + 30 > FETCH_DEADLINE:
+            raise CollectionBudgetExceeded('collection time budget exhausted')
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as response:
@@ -50,6 +59,8 @@ def fetch(url):
                             wait = 0
                     delay = max(delay, wait)
             print(f"fetch retry {attempt + 1}/3: {type(exc).__name__}: {exc}; wait {delay}s", flush=True)
+            if FETCH_DEADLINE is not None and time.monotonic() + delay + 30 > FETCH_DEADLINE:
+                raise CollectionBudgetExceeded('retry exceeds collection time budget') from exc
             time.sleep(delay)
 
 
