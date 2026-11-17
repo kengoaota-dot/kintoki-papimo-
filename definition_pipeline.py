@@ -34,7 +34,7 @@ def reusable_graph(old,data,graph_hash):
     return bool(version_ok and old.get('graph_sha256')==graph_hash and all(old.get(k)==data.get(k) for k in invariant))
 
 
-def inventory(collector,store):
+def _inventory_live(collector,store):
     from bs4 import BeautifulSoup
     import re
     url=f'https://papimo.jp/h/{collector.HALL_ID}/hit/index_machine/1-20-1684287/'
@@ -67,6 +67,27 @@ def inventory(collector,store):
     store.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',('machine_inventory',json.dumps(record,ensure_ascii=False)))
     store.db.commit()
     return record['machines']
+
+
+def inventory(collector,store):
+    from urllib.error import HTTPError, URLError
+    try:
+        machines = _inventory_live(collector,store)
+        if sorted(machines) != sorted(collector.ALL_MACHINES):
+            raise ValueError('inventory_target_mismatch')
+        return machines
+    except (HTTPError, URLError, TimeoutError, ConnectionError) as exc:
+        if isinstance(exc, HTTPError) and exc.code not in (429,500,502,503,504):
+            raise
+        row = store.db.execute('SELECT value FROM meta WHERE key=?',('machine_inventory',)).fetchone()
+        saved = json.loads(row[0]) if row else {}
+        machines = saved.get('machines', [])
+        if not saved.get('checked_at_jst') or sorted(machines) != sorted(collector.ALL_MACHINES):
+            raise
+        collector.inventory_fallback = {'reason':str(exc), 'last_verified_at_jst':saved['checked_at_jst'],
+            'inventory_verified':False, 'machines':machines}
+        print('WARNING: using last verified inventory provisionally',flush=True)
+        return machines
 
 
 def read_reviews(root,day):
@@ -371,6 +392,8 @@ def run(collector):
         print(json.dumps(audit,ensure_ascii=False),flush=True)
         return 0 if audit['automation_complete'] else 2
     machines=collector.TEST_MACHINES if args.scope=='test' else inventory(collector,store)
+    fallback=getattr(collector,'inventory_fallback',None)
+    if fallback:collector.save_json(output/'inventory_fallback.json',fallback)
     reviews=read_reviews(args.reviews_dir,day)
     results=[]
     for machine in machines:
@@ -422,6 +445,11 @@ def run(collector):
     collector.save_json(output/'backfill_audit.json',{'processed_machine_days':backfill_done,
         'pending_machine_days':len(backfill_queue),'not_in_daily_completion_denominator':True})
     audit=exports(collector,store,day,output,results,run_id,args.reviews_dir)
+    if fallback:
+        audit['inventory_verified']=False
+        audit['automation_complete']=False
+        audit['definition_complete']=False
+        collector.save_json(output/'audit.json',audit)
     store.close()
     print(json.dumps(audit,ensure_ascii=False),flush=True)
     # Nonzero is intentional: candidates or source gaps must never look like complete collection.
