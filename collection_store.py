@@ -75,6 +75,12 @@ class Store:
             json.dumps(data,ensure_ascii=False),data['previous_snapshot_id'],reason))
         self.db.execute('INSERT OR REPLACE INTO observations VALUES(?,?,?,?,?,?)',(
             run_id,data['business_date'],data['machine'],snapshot_id,data['collected_at_jst'],int(reused)))
+        # Preserve the canonical complete observation when a later attempt failed.
+        # The failed snapshot and its observation remain available for audit.
+        if old and old.get('status')=='complete' and data.get('errors'):
+            self.db.execute('INSERT OR REPLACE INTO observations VALUES(?,?,?,?,?,?)',(
+                run_id+'-preserved',data['business_date'],data['machine'],old['snapshot_id'],
+                old['collected_at_jst'],1))
         self.db.commit()
         return data,additions
 
