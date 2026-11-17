@@ -1,0 +1,94 @@
+name: Kintoki Compact Brief
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Kintoki PAPIMO Collection]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: papimo-compact-brief
+  cancel-in-progress: false
+jobs:
+  brief:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore state without collection
+        run: python restore_state.py
+      - name: Export compact JSON
+        id: compact
+        run: |
+          python - <<'PY'
+          import json,os,sqlite3,subprocess
+          from pathlib import Path
+          root=Path('restored')
+          audit=json.loads(next(root.rglob('latest_audit.json')).read_text())
+          manifest=json.loads((root/'restore_manifest.json').read_text())
+          assert audit.get('automation_complete') is True, 'Source not complete'
+          repo=os.environ['GITHUB_REPOSITORY']
+          def api(path):
+              return json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/'+path],text=True))
+          assert not any(r['name']=='Kintoki PAPIMO Collection' for r in api('actions/runs?status=in_progress&per_page=100')['workflow_runs']), 'New collection running'
+          source=audit['run_id'];name='papimo-brief-'+source
+          if any(a['name']==name and not a['expired'] for a in api('actions/artifacts?per_page=100')['artifacts']):
+              print('Unchanged source: reuse existing brief')
+              with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('skip=true\n')
+              raise SystemExit(0)
+          db=sqlite3.connect(next(root.rglob('papimo.sqlite3')).resolve().as_uri()+'?mode=ro',uri=True)
+          def rows(day):
+              result={}
+              for raw, in db.execute('SELECT s.payload FROM observations o JOIN snapshots s ON s.id=o.snapshot_id WHERE o.day=? ORDER BY o.rowid',(day,)):
+                  r=json.loads(raw);result[int(r['machine'])]=r
+              return result
+          def valid(r):
+              return bool(r and r.get('reading_status') in ('automatic_image_estimate','work_visual_confirmed') and r.get('sign_judgment')!='uncertain_near_zero' and not r.get('errors') and not r.get('curve_clipped') and type(r.get('signed_difference')) in (int,float))
+          fixture={'reading_status':'automatic_image_estimate','signed_difference':100}
+          assert valid(fixture) and not valid({**fixture,'sign_judgment':'uncertain_near_zero'}) and not valid({**fixture,'errors':['error']})
+          day=audit['business_date'];current=rows(day)
+          assert len(current)==audit['required_machines'], 'Inventory mismatch'
+          out=Path('briefing');out.mkdir(exist_ok=True)
+          def save(name,obj):
+              (out/(name+'.json')).write_text(json.dumps(obj,ensure_ascii=False,separators=(',',':'))+'\n')
+          state={k:audit.get(k) for k in ('business_date','run_id','required_machines','automation_complete','data_complete','history_count_matches','source_missing_fields','uncertain_signs','excel_status')}
+          state.update(schema='brief-v1',artifact_id=manifest['artifact_id'],technical_failures=len(audit.get('technical_failures',[])))
+          units={}
+          for m,r in sorted(current.items()):
+              units[str(m)]={'model':r.get('machine_name'),'model_code':r.get('machine_code'),'difference':r.get('signed_difference') if valid(r) else None,'error':r.get('estimated_error'),'total_g':r.get('total_start'),'last_g':r.get('final_start'),'bb':r.get('bb'),'rb':r.get('rb'),'updated_at':r.get('updated_at'),'history_match':r.get('history_count_matches'),'url':r.get('source_url')}
+          save('latest_state',{**state,'by_machine':units})
+          forecasts=[{'id':'20261116-G','day':'2026-11-16','kind':'fixed_G','machines':[355,454,346],'published_at':None,'baseline':0},{'id':'20261117-provisional','day':'2026-11-17','kind':'provisional_not_recalculated_G','machines':[346,355,306],'published_at':None,'baseline':0},{'id':'20261116-357','day':'2026-11-16','kind':'intraday_source_baseline','machines':[357],'published_at':'2026-11-16T19:26:00+09:00','baseline':-2050,'baseline_time':'2026-11-16T19:16:00+09:00','strict_publication_baseline':False}]
+          forecast={'business_date':day,'status':'registered_only' if any(f['day']==day for f in forecasts) else 'forecast_not_registered','model_recalculated':False,'forecasts':[f for f in forecasts if f['day']==day]}
+          save('morning_forecast',forecast)
+          results=[]
+          for f in forecasts:
+              data=rows(f['day'])
+              for rank,m in enumerate(f['machines'],1):
+                  r=data.get(m);ok=valid(r)
+                  value=r.get('signed_difference') if ok else None
+                  idle=bool(r and r.get('total_start')==0 and r.get('bb')==0 and r.get('rb')==0)
+                  results.append({**f,'forecast_id':f['id'],'rank':rank,'machine':m,'difference':value,'change':value-f['baseline'] if ok else None,'idle_display':idle,'win':value>0 if ok and not idle else None,'error':r.get('estimated_error') if r else None,'updated_at':r.get('updated_at') if r else None,'official_scored':False,'hold':'closure and original publication/input time audit pending'})
+          save('prediction_results',{'source_run':source,'results':results,'model_recalculated':False})
+          db.close()
+          print('CHATGPT_STATE='+json.dumps(state,ensure_ascii=False,separators=(',',':')))
+          print('CHATGPT_FORECAST='+json.dumps(forecast,ensure_ascii=False,separators=(',',':')))
+          print('CHATGPT_RESULTS='+json.dumps(results,ensure_ascii=False,separators=(',',':')))
+          for m,r in units.items():print('CHATGPT_UNIT_'+m+'='+json.dumps(r,ensure_ascii=False,separators=(',',':')))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('skip=false\nname='+name+'\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:f.write('Compact exports ready. Source '+source+'; '+str(len(current))+' machines. Missing values remain null. Model recalculation and official scoring are not claimed.\n')
+          PY
+      - name: Save three compact JSON files
+        if: steps.compact.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.compact.outputs.name }}
+          path: briefing/*.json
+          if-no-files-found: error
+          retention-days: 90
