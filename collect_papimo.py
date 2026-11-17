@@ -24,15 +24,33 @@ FIELDS = ["business_date", "machine", "row", "count", "time", "start", "payout",
 
 
 def fetch(url):
-    for attempt in range(2):
+    from urllib.error import HTTPError, URLError
+    from email.utils import parsedate_to_datetime
+    delays = (30, 60, 120)
+    for attempt in range(4):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as response:
                 return response.read()
-        except Exception:
-            if attempt == 1:
+        except (HTTPError, URLError, TimeoutError, ConnectionError) as exc:
+            if isinstance(exc, HTTPError) and exc.code not in (429, 500, 502, 503, 504):
                 raise
-            time.sleep(2 * (attempt + 1))
+            if attempt == len(delays):
+                raise
+            delay = delays[attempt]
+            if isinstance(exc, HTTPError) and exc.headers:
+                retry_after = exc.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        wait = int(retry_after)
+                    except ValueError:
+                        try:
+                            wait = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
+                        except (ValueError, TypeError, OverflowError):
+                            wait = 0
+                    delay = max(delay, wait)
+            print(f"fetch retry {attempt + 1}/3: {type(exc).__name__}: {exc}; wait {delay}s", flush=True)
+            time.sleep(delay)
 
 
 def number(value):
