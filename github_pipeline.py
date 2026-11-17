@@ -8,6 +8,8 @@ from github_workbook import build_workbook
 def finalize_export(collector,store,day,output,results,run_id,legacy_audit):
     accepted={'work_visual_confirmed','automatic_image_estimate'}
     failures=[]
+    fallback=getattr(collector,'inventory_fallback',None)
+    if fallback:failures.append({'error':'inventory_not_live_verified','detail':fallback})
     source_history_mismatches=[]
     source_history_reconciliations=[]
     field_audit=[{'business_date':day,'machine':r['machine'],'snapshot_id':r['snapshot_id'],
