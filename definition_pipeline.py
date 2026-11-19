@@ -50,7 +50,7 @@ def _inventory_live(collector,store):
     signature=hashlib.sha256(json.dumps(models,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     row=store.db.execute('SELECT value FROM meta WHERE key=?',('machine_inventory',)).fetchone()
     saved=json.loads(row[0]) if row else None
-    if saved and saved['signature']==signature:return saved['machines']
+    # Recheck machine links even when model counts are unchanged.
     machines={}
     for model in models:
         page=BeautifulSoup(collector.fetch(model['url']),'html.parser')
@@ -63,8 +63,11 @@ def _inventory_live(collector,store):
             if m in machines:raise ValueError('duplicate_machine_in_inventory')
             machines[m]=model['name']
         time.sleep(.2)
-    if sorted(machines)!=sorted(collector.ALL_MACHINES):raise ValueError('inventory_target_mismatch')
-    record={'signature':signature,'models':models,'machines':sorted(machines),'checked_at_jst':datetime.now(collector.JST).isoformat()}
+    if not machines:raise ValueError('machine_inventory_empty')
+    previous=set(saved['machines'] if saved else collector.ALL_MACHINES)
+    current=set(machines)
+    print(json.dumps({'inventory_added':sorted(current-previous),'inventory_removed':sorted(previous-current)},ensure_ascii=False),flush=True)
+    record={'signature':signature,'machine_models':machines,'models':models,'machines':sorted(machines),'checked_at_jst':datetime.now(collector.JST).isoformat()}
     store.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)',('machine_inventory',json.dumps(record,ensure_ascii=False)))
     store.db.commit()
     return record['machines']
@@ -74,8 +77,6 @@ def inventory(collector,store):
     from urllib.error import HTTPError, URLError
     try:
         machines = _inventory_live(collector,store)
-        if sorted(machines) != sorted(collector.ALL_MACHINES):
-            raise ValueError('inventory_target_mismatch')
         return machines
     except (HTTPError, URLError, TimeoutError, ConnectionError) as exc:
         if isinstance(exc, HTTPError) and exc.code not in (429,500,502,503,504):
@@ -83,7 +84,7 @@ def inventory(collector,store):
         row = store.db.execute('SELECT value FROM meta WHERE key=?',('machine_inventory',)).fetchone()
         saved = json.loads(row[0]) if row else {}
         machines = saved.get('machines', [])
-        if not saved.get('checked_at_jst') or sorted(machines) != sorted(collector.ALL_MACHINES):
+        if not saved.get('checked_at_jst') or not machines or len(set(machines)) != len(machines):
             raise
         collector.inventory_fallback = {'reason':str(exc), 'last_verified_at_jst':saved['checked_at_jst'],
             'inventory_verified':False, 'machines':machines}
