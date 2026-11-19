@@ -10,7 +10,7 @@ def main():
     current=int(os.environ['GITHUB_RUN_ID'])
     raw=subprocess.check_output(['gh','api',f'repos/{repository}/actions/artifacts?per_page=100'],text=True)
     artifacts=json.loads(raw)['artifacts']
-    candidates=[a for a in artifacts if not a['expired'] and a.get('workflow_run',{}).get('id')!=current]
+    candidates=[a for a in artifacts if not a['expired'] and (a.get('workflow_run',{}).get('id')!=current or (a['name'].startswith(f'papimo-state-{current}-') and a['name'].rsplit('-',1)[-1].isdigit() and int(a['name'].rsplit('-',1)[-1]) < int(os.environ.get('GITHUB_RUN_ATTEMPT','1'))))]
     states=sorted([a for a in candidates if a['name'].startswith('papimo-state-')],key=lambda a:a['created_at'],reverse=True)
     legacy=sorted([a for a in candidates if a['name'].startswith('papimo-') and not a['name'].startswith('papimo-state-')],key=lambda a:a['created_at'],reverse=True)
     selected=(states or legacy)
