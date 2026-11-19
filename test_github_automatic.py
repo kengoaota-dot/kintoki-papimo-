@@ -26,6 +26,25 @@ def record():
 
 
 class AutomaticTests(unittest.TestCase):
+    def test_sparse_top_axis_gridline_is_calibrated(self):
+        import io
+        from PIL import Image, ImageDraw
+        import graph_features
+
+        image=Image.new('RGB',(480,480),'white')
+        draw=ImageDraw.Draw(image)
+        draw.line([(20,304),(120,304),(140,16),(444,16)],fill=(230,0,20),width=4)
+        # This top line has only 190 eligible gray pixels; the other axes are full.
+        for y,left,right in [(16,55,245),(112,55,470),(208,55,470),(400,55,470)]:
+            draw.line([(left,y),(right,y)],fill=(204,206,204),width=1)
+        stream=io.BytesIO()
+        image.save(stream,format='PNG')
+        ticks={16:1500,112:1000,208:500,400:500}
+        with patch('graph_features.read_tick',side_effect=lambda _image,y:ticks.get(y)):
+            features=graph_features.extract_candidates(stream.getvalue())
+        self.assertIn({'y':16,'value':1500},features['axis_labels'])
+        self.assertEqual(features['candidate_signed_difference'],1500)
+
     def test_history_priority_after_stable_single_event_recheck(self):
         history=[{'type':'BIG','time':'12:00'},{'type':'REG','time':'11:00'}]
         old={**record(),'machine':309,'bb':2,'rb':1,'history_bb_count':1,'history_rb_count':1,
