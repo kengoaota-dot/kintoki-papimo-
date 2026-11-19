@@ -34,7 +34,8 @@ def extract_candidates(raw):
         raise ValueError('unsupported_graph_layout: expected 480x480; requires visual review')
     # These layout bounds are specific to the verified PAPIMO 480px daily plot.
     gray = ((pixels.max(2)-pixels.min(2)) < 5) & (pixels[:,:,0] >= 185) & (pixels[:,:,0] <= 225)
-    rows = np.where(gray[:, 55:470].sum(1) > 260)[0]
+    # The top grid line can be partly obscured by the chart frame/labels; OCR and linear-fit validation reject noise.
+    rows = np.where(gray[:, 55:470].sum(1) > 150)[0]
     tick_rows = []
     for y in rows:
         if 10 <= y < 450 and (not tick_rows or y-tick_rows[-1] > 3):
